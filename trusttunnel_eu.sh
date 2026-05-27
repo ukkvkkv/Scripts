@@ -67,15 +67,16 @@ CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$DOMAIN" --a
 [[ -n "$EMAIL" ]] && CERTBOT_ARGS+=(-m "$EMAIL") || CERTBOT_ARGS+=(--register-unsafely-without-email)
 certbot "${CERTBOT_ARGS[@]}"
 
-# Конфиги TrustTunnel
 cd /opt/trusttunnel
 
+# credentials
 cat > credentials.toml <<EOF
 [[client]]
 username = "${EU_USER}"
 password = "${EU_PASS}"
 EOF
 
+# hosts
 cat > hosts.toml <<EOF
 [[main_hosts]]
 hostname = "${DOMAIN}"
@@ -83,6 +84,7 @@ cert_chain_path = "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 private_key_path = "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 EOF
 
+# vpn.toml — ИСПРАВЛЕННЫЙ (с listen_protocols)
 cat > vpn.toml <<EOF
 listen_address = "0.0.0.0:${EU_PORT}"
 
@@ -91,6 +93,30 @@ allow_private_network_connections = false
 
 credentials_file = "credentials.toml"
 rules_file = "rules.toml"
+
+[listen_protocols]
+[listen_protocols.http1]
+upload_buffer_size = 32768
+[listen_protocols.http2]
+initial_connection_window_size = 8388608
+initial_stream_window_size = 131072
+max_concurrent_streams = 1000
+max_frame_size = 16384
+header_table_size = 65536
+[listen_protocols.quic]
+recv_udp_payload_size = 1350
+send_udp_payload_size = 1350
+initial_max_data = 104857600
+initial_max_stream_data_bidi_local = 1048576
+initial_max_stream_data_bidi_remote = 1048576
+initial_max_stream_data_uni = 1048576
+initial_max_streams_bidi = 4096
+initial_max_streams_uni = 4096
+max_connection_window = 25165824
+max_stream_window = 16777216
+disable_active_migration = true
+enable_early_data = true
+message_queue_capacity = 4096
 
 [forward_protocol]
 direct = {}
@@ -116,6 +142,5 @@ fi
 
 echo
 echo "=== EU-сервер готов ==="
-echo " "
 TT_LINK="tt://${EU_USER}:${EU_PASS}@${DOMAIN}:${EU_PORT}/?sni=${DOMAIN}&insecure=0#trusttunnel-eu"
 echo "$TT_LINK"
