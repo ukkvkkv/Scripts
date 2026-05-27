@@ -22,7 +22,7 @@ port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; 
 random_port() { shuf -i 20000-60000 -n 1; }
 random_pass() { openssl rand -base64 24 | tr '+/' '-_' | tr -d '=' | cut -c1-28; }
 
-echo "=== Установка TrustTunnel EU exit-сервера ==="
+echo "=== Установка TrustTunnel EU exit-сервера (исправленная версия) ==="
 read -rp "Введите домен EU-сервера: " DOMAIN
 DOMAIN="${DOMAIN,,}"
 if ! valid_domain "$DOMAIN"; then echo "Ошибка: домен некорректен: $DOMAIN"; exit 1; fi
@@ -69,14 +69,12 @@ certbot "${CERTBOT_ARGS[@]}"
 
 cd /opt/trusttunnel
 
-# credentials
 cat > credentials.toml <<EOF
 [[client]]
 username = "${EU_USER}"
 password = "${EU_PASS}"
 EOF
 
-# hosts
 cat > hosts.toml <<EOF
 [[main_hosts]]
 hostname = "${DOMAIN}"
@@ -84,7 +82,6 @@ cert_chain_path = "/etc/letsencrypt/live/${DOMAIN}/fullchain.pem"
 private_key_path = "/etc/letsencrypt/live/${DOMAIN}/privkey.pem"
 EOF
 
-# vpn.toml — ИСПРАВЛЕННЫЙ (с listen_protocols)
 cat > vpn.toml <<EOF
 listen_address = "0.0.0.0:${EU_PORT}"
 
@@ -128,19 +125,28 @@ EOF
 
 # systemd
 cp trusttunnel.service.template /etc/systemd/system/trusttunnel.service 2>/dev/null || true
-sed -i "s|ExecStart=.*|ExecStart=/opt/trusttunnel/trusttunnel_endpoint vpn.toml hosts.toml|" /etc/systemd/system/trusttunnel.service 2>/dev/null || true
+sed -i 's|ExecStart=.*|ExecStart=/opt/trusttunnel/trusttunnel_endpoint vpn.toml hosts.toml|' /etc/systemd/system/trusttunnel.service
 
 systemctl daemon-reload
 systemctl enable --now trusttunnel
-sleep 3
+sleep 4
 
 if ! systemctl is-active --quiet trusttunnel; then
-  echo "Ошибка: trusttunnel не запустился"
+  echo "=== ОШИБКА: trusttunnel не запустился ==="
   journalctl --no-pager -e -u trusttunnel
+  echo "Покажи мне этот вывод полностью, если не пойму в чём дело."
   exit 1
 fi
 
+echo "Сервер запущен успешно."
+
+# Генерируем ПРАВИЛЬНУЮ tt:// ссылку
+echo "Генерируем клиентскую ссылку..."
+TT_LINK=$(/opt/trusttunnel/trusttunnel_endpoint vpn.toml hosts.toml -c "${EU_USER}" -a "${DOMAIN}:${EU_PORT}" --format deeplink 2>/dev/null || echo "ОШИБКА генерации ссылки")
+
 echo
-echo "=== EU-сервер готов ==="
-TT_LINK="tt://${EU_USER}:${EU_PASS}@${DOMAIN}:${EU_PORT}/?sni=${DOMAIN}&insecure=0#trusttunnel-eu"
-echo "$TT_LINK"
+echo "=== EU-сервер ГОТОВ ==="
+echo "Правильная ссылка для клиентов (Shadowrocket / официальное приложение):"
+echo "${TT_LINK}"
+echo
+echo "Скопируй её целиком и вставь в клиент."
