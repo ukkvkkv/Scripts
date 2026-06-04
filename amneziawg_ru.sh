@@ -20,6 +20,16 @@ RU_DOMAINS_IPSET_TIMEOUT="86400"
 RU_DIRECT_TABLE="100"
 RU_NL_TABLE="200"
 
+# Актуальные параметры AmneziaWG для мобильного интернета / LTE / 4G / 5G
+AWG_MTU="1280"
+AWG_JC="3"
+AWG_JMIN="40"
+AWG_JMAX="100"
+AWG_S1="24"
+AWG_S2="64"
+AWG_S3="134"
+AWG_S4="72"
+
 RU_GATEWAY_CONF_SOURCE="${1:-/root/ru-gateway-for-ru.conf}"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -81,6 +91,30 @@ mv /tmp/awg0.interface.only "$RU_SERVER_CONF"
 
 # Меняем адрес сервера на RU-подсеть.
 sed -i -E "s#^Address = .*#Address = $RU_SERVER_ADDRESS#g" "$RU_SERVER_CONF"
+
+echo ""
+echo "========== ПРИМЕНЯЕМ МОБИЛЬНЫЕ ПАРАМЕТРЫ AMNEZIAWG ДЛЯ awg0 =========="
+echo ""
+
+# Удаляем старые строки параметров, чтобы не было дублей.
+sed -i '/^MTU = /d' "$RU_SERVER_CONF"
+sed -i '/^Jc = /d' "$RU_SERVER_CONF"
+sed -i '/^Jmin = /d' "$RU_SERVER_CONF"
+sed -i '/^Jmax = /d' "$RU_SERVER_CONF"
+sed -i '/^S1 = /d' "$RU_SERVER_CONF"
+sed -i '/^S2 = /d' "$RU_SERVER_CONF"
+sed -i '/^S3 = /d' "$RU_SERVER_CONF"
+sed -i '/^S4 = /d' "$RU_SERVER_CONF"
+
+# Вставляем параметры сразу после Address.
+sed -i "/^Address = /a MTU = $AWG_MTU" "$RU_SERVER_CONF"
+sed -i "/^MTU = /a Jc = $AWG_JC" "$RU_SERVER_CONF"
+sed -i "/^Jc = /a Jmin = $AWG_JMIN" "$RU_SERVER_CONF"
+sed -i "/^Jmin = /a Jmax = $AWG_JMAX" "$RU_SERVER_CONF"
+sed -i "/^Jmax = /a S1 = $AWG_S1" "$RU_SERVER_CONF"
+sed -i "/^S1 = /a S2 = $AWG_S2" "$RU_SERVER_CONF"
+sed -i "/^S2 = /a S3 = $AWG_S3" "$RU_SERVER_CONF"
+sed -i "/^S3 = /a S4 = $AWG_S4" "$RU_SERVER_CONF"
 
 # Убираем IPv6.
 sed -i -E 's/,[[:space:]]*fd42:[0-9a-fA-F:]+\/[0-9]+//g' "$RU_SERVER_CONF"
@@ -299,6 +333,7 @@ CLIENT_PRIVATE=$(awg genkey)
 CLIENT_PUBLIC=$(echo "$CLIENT_PRIVATE" | awg pubkey)
 CLIENT_PSK=$(awg genpsk)
 
+MTU=$(grep "^MTU" "$SERVER_CONF" | awk '{print $3}')
 JC=$(grep "^Jc" "$SERVER_CONF" | awk '{print $3}')
 JMIN=$(grep "^Jmin" "$SERVER_CONF" | awk '{print $3}')
 JMAX=$(grep "^Jmax" "$SERVER_CONF" | awk '{print $3}')
@@ -318,6 +353,7 @@ cat > "$CLIENT_CONF" <<EOF
 PrivateKey = $CLIENT_PRIVATE
 Address = $CLIENT_IP/32
 DNS = 10.77.77.1
+MTU = $MTU
 Jc = $JC
 Jmin = $JMIN
 Jmax = $JMAX
@@ -423,6 +459,16 @@ echo "Маршрутизация:"
 echo ".ru домены → напрямую через RU"
 echo "всё остальное → через EU/NL"
 echo ""
+echo "Параметры awg0 для клиентов:"
+echo "MTU  = $AWG_MTU"
+echo "Jc   = $AWG_JC"
+echo "Jmin = $AWG_JMIN"
+echo "Jmax = $AWG_JMAX"
+echo "S1   = $AWG_S1"
+echo "S2   = $AWG_S2"
+echo "S3   = $AWG_S3"
+echo "S4   = $AWG_S4"
+echo ""
 echo "Интерфейсы:"
 echo "awg0   — сервер для клиентов на RU, подсеть 10.77.77.0/24"
 echo "awg-nl — туннель RU → EU/NL"
@@ -437,6 +483,18 @@ echo "Для создания новых клиентов используй:"
 echo ""
 echo "sudo add-awg-client"
 echo ""
+echo "sudo add-awg-client имя_клиента"
+echo ""
+echo "Проверить .ru ipset:"
+echo "sudo ipset list $RU_DOMAINS_IPSET"
+echo ""
+echo "Проверить dnsmasq:"
+echo "sudo systemctl status dnsmasq --no-pager -l"
+echo ""
+echo "Проверить правила маршрутизации:"
+echo "ip rule"
+echo "ip route show table $RU_DIRECT_TABLE"
+echo "ip route show table $RU_NL_TABLE"
 echo ""
 echo "========== ТЕСТОВЫЙ КЛИЕНТСКИЙ КОНФИГ =========="
 echo ""
