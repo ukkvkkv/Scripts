@@ -12,6 +12,14 @@ INSTALLER_FILE="/root/amneziawg-install.sh"
 
 RU_CLIENT_SUBNET="10.77.77.0/24"
 RU_SERVER_ADDRESS="10.77.77.1/24"
+RU_DNS_ADDRESS="10.77.77.1"
+
+RU_DOMAINS_IPSET="ru_domains"
+RU_DOMAINS_IPSET_TIMEOUT="86400"
+
+RU_DIRECT_TABLE="100"
+RU_NL_TABLE="200"
+
 RU_GATEWAY_CONF_SOURCE="${1:-/root/ru-gateway-for-ru.conf}"
 
 if [ "$(id -u)" -ne 0 ]; then
@@ -35,7 +43,7 @@ echo ""
 export DEBIAN_FRONTEND=noninteractive
 
 apt update
-apt install -y curl wget qrencode iptables iptables-persistent ca-certificates
+apt install -y curl wget qrencode iptables iptables-persistent ca-certificates dnsmasq ipset
 
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
@@ -91,20 +99,8 @@ sed -i '/^PostUp = ip rule /d' "$RU_SERVER_CONF"
 sed -i '/^PostDown = ip rule /d' "$RU_SERVER_CONF"
 sed -i '/^PostUp = ip route /d' "$RU_SERVER_CONF"
 sed -i '/^PostDown = ip route /d' "$RU_SERVER_CONF"
-
-cat >> "$RU_SERVER_CONF" <<EOF
-PostUp = ip rule add from $RU_CLIENT_SUBNET table 200 2>/dev/null || true
-PostUp = ip route replace default dev awg-nl table 200
-PostUp = iptables -t nat -A POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE
-PostUp = iptables -A FORWARD -i awg0 -o awg-nl -j ACCEPT
-PostUp = iptables -A FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
-
-PostDown = ip rule del from $RU_CLIENT_SUBNET table 200 2>/dev/null || true
-PostDown = ip route del default dev awg-nl table 200 2>/dev/null || true
-PostDown = iptables -t nat -D POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE 2>/dev/null || true
-PostDown = iptables -D FORWARD -i awg0 -o awg-nl -j ACCEPT 2>/dev/null || true
-PostDown = iptables -D FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
-EOF
+sed -i '/^PostUp = ipset /d' "$RU_SERVER_CONF"
+sed -i '/^PostDown = ipset /d' "$RU_SERVER_CONF"
 
 echo ""
 echo "========== СОЗДАЁМ ТУННЕЛЬ RU → EU/NL: awg-nl =========="
@@ -138,6 +134,96 @@ echo ""
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-awg-forward.conf
 sysctl --system >/dev/null
+
+echo ""
+echo "========== ОПРЕДЕЛЯЕМ ВНЕШНИЙ ИНТЕРФЕЙС RU-СЕРВЕРА =========="
+echo ""
+
+EXT_IFACE=$(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if($i=="dev") print $(i+1); exit}')
+EXT_GW=$(ip route show default | awk '{print $3; exit}')
+
+if [ -z "$EXT_IFACE" ]; then
+  echo "Ошибка: не удалось определить внешний интерфейс RU-сервера"
+  exit 1
+fi
+
+echo "Внешний интерфейс RU-сервера: $EXT_IFACE"
+
+if [ -n "$EXT_GW" ]; then
+  echo "Шлюз RU-сервера: $EXT_GW"
+else
+  echo "Шлюз не найден, будет использоваться маршрут default dev $EXT_IFACE"
+fi
+
+echo ""
+echo "========== НАСТРАИВАЕМ .ru ДОМЕНЫ НА ПРЯМОЙ ВЫХОД ЧЕРЕЗ RU =========="
+echo ""
+
+ipset create "$RU_DOMAINS_IPSET" hash:ip timeout "$RU_DOMAINS_IPSET_TIMEOUT" -exist
+
+cat > /etc/dnsmasq.d/awg-ru-domains.conf <<EOF
+interface=awg0
+bind-interfaces
+listen-address=$RU_DNS_ADDRESS
+
+server=1.1.1.1
+server=1.0.0.1
+
+ipset=/.ru/$RU_DOMAINS_IPSET
+EOF
+
+systemctl enable dnsmasq
+systemctl restart dnsmasq
+
+echo ""
+echo "========== ДОБАВЛЯЕМ POSTUP/POSTDOWN ДЛЯ КАСКАДА И .ru =========="
+echo ""
+
+cat >> "$RU_SERVER_CONF" <<EOF
+PostUp = ipset create $RU_DOMAINS_IPSET hash:ip timeout $RU_DOMAINS_IPSET_TIMEOUT -exist
+
+PostUp = ip rule add fwmark 100 table $RU_DIRECT_TABLE priority 100 2>/dev/null || true
+PostUp = ip rule add from $RU_CLIENT_SUBNET table $RU_NL_TABLE priority 200 2>/dev/null || true
+EOF
+
+if [ -n "$EXT_GW" ]; then
+  cat >> "$RU_SERVER_CONF" <<EOF
+PostUp = ip route replace default via $EXT_GW dev $EXT_IFACE table $RU_DIRECT_TABLE
+EOF
+else
+  cat >> "$RU_SERVER_CONF" <<EOF
+PostUp = ip route replace default dev $EXT_IFACE table $RU_DIRECT_TABLE
+EOF
+fi
+
+cat >> "$RU_SERVER_CONF" <<EOF
+PostUp = ip route replace default dev awg-nl table $RU_NL_TABLE
+
+PostUp = iptables -t mangle -A PREROUTING -i awg0 -m set --match-set $RU_DOMAINS_IPSET dst -j MARK --set-mark 100
+
+PostUp = iptables -t nat -A POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE
+PostUp = iptables -t nat -A POSTROUTING -s $RU_CLIENT_SUBNET -o $EXT_IFACE -j MASQUERADE
+
+PostUp = iptables -A FORWARD -i awg0 -o awg-nl -j ACCEPT
+PostUp = iptables -A FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+PostUp = iptables -A FORWARD -i awg0 -o $EXT_IFACE -j ACCEPT
+PostUp = iptables -A FORWARD -i $EXT_IFACE -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+PostDown = iptables -t mangle -D PREROUTING -i awg0 -m set --match-set $RU_DOMAINS_IPSET dst -j MARK --set-mark 100 2>/dev/null || true
+
+PostDown = iptables -t nat -D POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE 2>/dev/null || true
+PostDown = iptables -t nat -D POSTROUTING -s $RU_CLIENT_SUBNET -o $EXT_IFACE -j MASQUERADE 2>/dev/null || true
+
+PostDown = iptables -D FORWARD -i awg0 -o awg-nl -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -i awg0 -o $EXT_IFACE -j ACCEPT 2>/dev/null || true
+PostDown = iptables -D FORWARD -i $EXT_IFACE -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+
+PostDown = ip rule del fwmark 100 table $RU_DIRECT_TABLE priority 100 2>/dev/null || true
+PostDown = ip rule del from $RU_CLIENT_SUBNET table $RU_NL_TABLE priority 200 2>/dev/null || true
+PostDown = ip route flush table $RU_DIRECT_TABLE 2>/dev/null || true
+PostDown = ip route flush table $RU_NL_TABLE 2>/dev/null || true
+EOF
 
 echo ""
 echo "========== СОЗДАЁМ КОМАНДУ add-awg-client ДЛЯ RU-СЕРВЕРА =========="
@@ -222,7 +308,7 @@ cat > "$CLIENT_CONF" <<EOF
 [Interface]
 PrivateKey = $CLIENT_PRIVATE
 Address = $CLIENT_IP/32
-DNS = 1.1.1.1, 1.0.0.1
+DNS = 10.77.77.1
 Jc = $JC
 Jmin = $JMIN
 Jmax = $JMAX
@@ -312,9 +398,19 @@ echo ""
 echo "Схема:"
 echo "Клиент → RU сервер → EU/NL сервер → интернет"
 echo ""
+echo "Маршрутизация:"
+echo ".ru домены → напрямую через RU"
+echo "всё остальное → через EU/NL"
+echo ""
 echo "Интерфейсы:"
 echo "awg0   — сервер для клиентов на RU, подсеть 10.77.77.0/24"
 echo "awg-nl — туннель RU → EU/NL"
+echo ""
+echo "DNS клиентов:"
+echo "$RU_DNS_ADDRESS"
+echo ""
+echo "ipset для .ru:"
+echo "$RU_DOMAINS_IPSET, timeout $RU_DOMAINS_IPSET_TIMEOUT секунд"
 echo ""
 echo "Для создания новых клиентов используй:"
 echo ""
@@ -325,6 +421,12 @@ echo "sudo add-awg-client iphone_ivan"
 echo ""
 echo "Можно без имени:"
 echo "sudo add-awg-client"
+echo ""
+echo "Проверить .ru ipset:"
+echo "sudo ipset list $RU_DOMAINS_IPSET"
+echo ""
+echo "Проверить dnsmasq:"
+echo "sudo systemctl status dnsmasq --no-pager -l"
 echo ""
 echo "========== ТЕСТОВЫЙ КЛИЕНТСКИЙ КОНФИГ =========="
 echo ""
