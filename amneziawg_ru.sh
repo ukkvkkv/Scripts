@@ -43,7 +43,7 @@ echo ""
 export DEBIAN_FRONTEND=noninteractive
 
 apt update
-apt install -y curl wget qrencode iptables iptables-persistent ca-certificates dnsmasq ipset
+apt install -y curl wget qrencode iptables iptables-persistent ca-certificates dnsmasq ipset dnsutils
 
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
@@ -92,7 +92,7 @@ sed -i -E 's/[[:space:]]*::\/0//g' "$RU_SERVER_CONF"
 sed -i '/^PostUp = ip6tables /d' "$RU_SERVER_CONF"
 sed -i '/^PostDown = ip6tables /d' "$RU_SERVER_CONF"
 
-# Убираем старые PostUp/PostDown, которые могли делать NAT напрямую в интернет.
+# Убираем старые PostUp/PostDown.
 sed -i '/^PostUp = iptables /d' "$RU_SERVER_CONF"
 sed -i '/^PostDown = iptables /d' "$RU_SERVER_CONF"
 sed -i '/^PostUp = ip rule /d' "$RU_SERVER_CONF"
@@ -163,7 +163,7 @@ ipset create "$RU_DOMAINS_IPSET" hash:ip timeout "$RU_DOMAINS_IPSET_TIMEOUT" -ex
 
 cat > /etc/dnsmasq.d/awg-ru-domains.conf <<EOF
 interface=awg0
-bind-interfaces
+bind-dynamic
 listen-address=$RU_DNS_ADDRESS
 
 server=1.1.1.1
@@ -182,8 +182,10 @@ echo ""
 cat >> "$RU_SERVER_CONF" <<EOF
 PostUp = ipset create $RU_DOMAINS_IPSET hash:ip timeout $RU_DOMAINS_IPSET_TIMEOUT -exist
 
-PostUp = ip rule add fwmark 100 table $RU_DIRECT_TABLE priority 100 2>/dev/null || true
-PostUp = ip rule add from $RU_CLIENT_SUBNET table $RU_NL_TABLE priority 200 2>/dev/null || true
+PostUp = ip rule del fwmark 100 table $RU_DIRECT_TABLE priority 100 2>/dev/null || true
+PostUp = ip rule del from $RU_CLIENT_SUBNET table $RU_NL_TABLE priority 200 2>/dev/null || true
+PostUp = ip rule add fwmark 100 table $RU_DIRECT_TABLE priority 100
+PostUp = ip rule add from $RU_CLIENT_SUBNET table $RU_NL_TABLE priority 200
 EOF
 
 if [ -n "$EXT_GW" ]; then
@@ -199,11 +201,18 @@ fi
 cat >> "$RU_SERVER_CONF" <<EOF
 PostUp = ip route replace default dev awg-nl table $RU_NL_TABLE
 
+PostUp = iptables -t mangle -D PREROUTING -i awg0 -m set --match-set $RU_DOMAINS_IPSET dst -j MARK --set-mark 100 2>/dev/null || true
 PostUp = iptables -t mangle -A PREROUTING -i awg0 -m set --match-set $RU_DOMAINS_IPSET dst -j MARK --set-mark 100
 
+PostUp = iptables -t nat -D POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE 2>/dev/null || true
+PostUp = iptables -t nat -D POSTROUTING -s $RU_CLIENT_SUBNET -o $EXT_IFACE -j MASQUERADE 2>/dev/null || true
 PostUp = iptables -t nat -A POSTROUTING -s $RU_CLIENT_SUBNET -o awg-nl -j MASQUERADE
 PostUp = iptables -t nat -A POSTROUTING -s $RU_CLIENT_SUBNET -o $EXT_IFACE -j MASQUERADE
 
+PostUp = iptables -D FORWARD -i awg0 -o awg-nl -j ACCEPT 2>/dev/null || true
+PostUp = iptables -D FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+PostUp = iptables -D FORWARD -i awg0 -o $EXT_IFACE -j ACCEPT 2>/dev/null || true
+PostUp = iptables -D FORWARD -i $EXT_IFACE -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
 PostUp = iptables -A FORWARD -i awg0 -o awg-nl -j ACCEPT
 PostUp = iptables -A FORWARD -i awg-nl -o awg0 -m state --state RELATED,ESTABLISHED -j ACCEPT
 PostUp = iptables -A FORWARD -i awg0 -o $EXT_IFACE -j ACCEPT
@@ -374,7 +383,6 @@ echo ""
 echo "========== ЗАПУСКАЕМ ТУННЕЛЬ И RU-СЕРВЕР =========="
 echo ""
 
-# На случай если интерфейсы уже были подняты вручную.
 awg-quick down awg-nl 2>/dev/null || true
 awg-quick down awg0 2>/dev/null || true
 
@@ -383,6 +391,19 @@ systemctl enable "$AWG_RU_SERVICE"
 
 systemctl restart "$AWG_NL_SERVICE"
 systemctl restart "$AWG_RU_SERVICE"
+
+echo ""
+echo "========== ПРОВЕРЯЕМ DNS ДЛЯ .ru =========="
+echo ""
+
+if dig @10.77.77.1 ozon.ru +short >/tmp/awg-dns-test.txt 2>/dev/null && [ -s /tmp/awg-dns-test.txt ]; then
+  echo "DNS 10.77.77.1 работает. Пример ответа для ozon.ru:"
+  cat /tmp/awg-dns-test.txt
+else
+  echo "Внимание: DNS 10.77.77.1 не ответил на ozon.ru."
+  echo "Проверь dnsmasq вручную:"
+  echo "sudo systemctl status dnsmasq --no-pager -l"
+fi
 
 echo ""
 echo "========== СОЗДАЁМ ПЕРВОГО ТЕСТОВОГО КЛИЕНТА НА RU =========="
@@ -414,19 +435,8 @@ echo "$RU_DOMAINS_IPSET, timeout $RU_DOMAINS_IPSET_TIMEOUT секунд"
 echo ""
 echo "Для создания новых клиентов используй:"
 echo ""
-echo "sudo add-awg-client имя_клиента"
-echo ""
-echo "Например:"
-echo "sudo add-awg-client iphone_ivan"
-echo ""
-echo "Можно без имени:"
 echo "sudo add-awg-client"
 echo ""
-echo "Проверить .ru ipset:"
-echo "sudo ipset list $RU_DOMAINS_IPSET"
-echo ""
-echo "Проверить dnsmasq:"
-echo "sudo systemctl status dnsmasq --no-pager -l"
 echo ""
 echo "========== ТЕСТОВЫЙ КЛИЕНТСКИЙ КОНФИГ =========="
 echo ""
