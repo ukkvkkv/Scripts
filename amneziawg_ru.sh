@@ -20,7 +20,7 @@ RU_DOMAINS_IPSET_TIMEOUT="86400"
 RU_DIRECT_TABLE="100"
 RU_NL_TABLE="200"
 
-# Актуальные параметры AmneziaWG для мобильного интернета / LTE / 4G / 5G
+# Параметры AmneziaWG для мобильного интернета / LTE / 4G / 5G
 AWG_MTU="1280"
 AWG_JC="3"
 AWG_JMIN="40"
@@ -196,7 +196,6 @@ echo ""
 ipset create "$RU_DOMAINS_IPSET" hash:ip timeout "$RU_DOMAINS_IPSET_TIMEOUT" -exist
 
 cat > /etc/dnsmasq.d/awg-ru-domains.conf <<EOF
-interface=awg0
 bind-dynamic
 listen-address=$RU_DNS_ADDRESS
 
@@ -207,7 +206,6 @@ ipset=/.ru/$RU_DOMAINS_IPSET
 EOF
 
 systemctl enable dnsmasq
-systemctl restart dnsmasq
 
 echo ""
 echo "========== ДОБАВЛЯЕМ POSTUP/POSTDOWN ДЛЯ КАСКАДА И .ru =========="
@@ -429,6 +427,12 @@ systemctl restart "$AWG_NL_SERVICE"
 systemctl restart "$AWG_RU_SERVICE"
 
 echo ""
+echo "========== ПЕРЕЗАПУСКАЕМ dnsmasq ПОСЛЕ ПОДНЯТИЯ awg0 =========="
+echo ""
+
+systemctl restart dnsmasq
+
+echo ""
 echo "========== ПРОВЕРЯЕМ DNS ДЛЯ .ru =========="
 echo ""
 
@@ -439,6 +443,8 @@ else
   echo "Внимание: DNS 10.77.77.1 не ответил на ozon.ru."
   echo "Проверь dnsmasq вручную:"
   echo "sudo systemctl status dnsmasq --no-pager -l"
+  echo "sudo ss -lunp | grep ':53'"
+  echo "ip addr show awg0"
 fi
 
 echo ""
