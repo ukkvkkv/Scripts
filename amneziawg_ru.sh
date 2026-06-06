@@ -1,1 +1,1 @@
-<?php echo file_get_contents('/home/workdir/artifacts/amneziawg_ru.sh'); ?>
+The content is in /home/workdir/artifacts/amneziawg_ru.sh
