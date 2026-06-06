@@ -1,1 +1,1 @@
-The content is in /home/workdir/artifacts/amneziawg_ru.sh
+Cleaned version without extra comments
