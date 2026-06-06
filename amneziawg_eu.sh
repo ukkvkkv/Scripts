@@ -1,1 +1,1 @@
-Cleaned version without extra comments
+Restored interactive scp transfer for ru-gateway config
