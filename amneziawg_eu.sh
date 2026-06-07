@@ -33,7 +33,9 @@ apt install -y curl wget qrencode iptables iptables-persistent ca-certificates
 
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
-bash "$INSTALLER_FILE"
+
+# Запускаем установщик полностью автоматически (принимаем все дефолтные ответы)
+printf '\n\n\n\n\n\n' | bash "$INSTALLER_FILE" || true
 
 if [ ! -f "$SERVER_CONF" ]; then
   echo "Ошибка: серверный конфиг не найден после установки"
