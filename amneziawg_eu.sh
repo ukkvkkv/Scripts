@@ -9,7 +9,7 @@ AWG_SERVICE="awg-quick@awg0"
 INSTALLER_URL="https://raw.githubusercontent.com/wiresock/amneziawg-install/master/amneziawg-install.sh"
 INSTALLER_FILE="/root/amneziawg-install.sh"
 
-# ==================== МОБИЛЬНЫЙ ПРЕСЕТ (с I-параметрами) ====================
+# ==================== МОБИЛЬНЫЙ ПРЕСЕТ ====================
 AWG_MTU="1280"
 AWG_JC="3"
 AWG_JMIN="40"
@@ -18,13 +18,6 @@ AWG_S1="24"
 AWG_S2="64"
 AWG_S3="0"
 AWG_S4="0"
-
-# I1-I5 (рекомендуемый мобильный вариант)
-AWG_I1="<r 128>"
-AWG_I2="<r 64><t>"
-AWG_I3="<r 32>"
-AWG_I4=""
-AWG_I5=""
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Ошибка: запусти скрипт от root или через sudo"
@@ -63,8 +56,8 @@ cp "$SERVER_CONF" "$SERVER_CONF.backup.$(date +%Y%m%d_%H%M%S)"
 awk 'BEGIN{keep=1} /^\[Peer\]/{keep=0} keep{print}' "$SERVER_CONF" > /tmp/awg0.clean
 mv /tmp/awg0.clean "$SERVER_CONF"
 
-# Применяем мобильные параметры + I1-I5
-sed -i '/^MTU = /d; /^Jc = /d; /^Jmin = /d; /^Jmax = /d; /^S1 = /d; /^S2 = /d; /^S3 = /d; /^S4 = /d; /^H1 = /d; /^H2 = /d; /^H3 = /d; /^H4 = /d; /^I1 = /d; /^I2 = /d; /^I3 = /d; /^I4 = /d; /^I5 = /d' "$SERVER_CONF"
+# Применяем мобильные параметры
+sed -i '/^MTU = /d; /^Jc = /d; /^Jmin = /d; /^Jmax = /d; /^S1 = /d; /^S2 = /d; /^S3 = /d; /^S4 = /d; /^H1 = /d; /^H2 = /d; /^H3 = /d; /^H4 = /d' "$SERVER_CONF"
 
 cat >> "$SERVER_CONF" <<EOF
 MTU = $AWG_MTU
@@ -81,13 +74,6 @@ H3 = 3
 H4 = 4
 EOF
 
-# Добавляем I-параметры
-[ -n "$AWG_I1" ] && echo "I1 = $AWG_I1" >> "$SERVER_CONF"
-[ -n "$AWG_I2" ] && echo "I2 = $AWG_I2" >> "$SERVER_CONF"
-[ -n "$AWG_I3" ] && echo "I3 = $AWG_I3" >> "$SERVER_CONF"
-[ -n "$AWG_I4" ] && echo "I4 = $AWG_I4" >> "$SERVER_CONF"
-[ -n "$AWG_I5" ] && echo "I5 = $AWG_I5" >> "$SERVER_CONF"
-
 # Убираем IPv6
 sed -i -E 's/,[[:space:]]*fd42:[0-9a-fA-F:]+\/[0-9]+//g' "$SERVER_CONF"
 sed -i -E 's/fd42:[0-9a-fA-F:]+\/[0-9]+,[[:space:]]*//g' "$SERVER_CONF"
@@ -103,7 +89,7 @@ sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-awg-forward.conf
 sysctl --system
 
-# Создаём add-awg-client с полным набором параметров (включая I)
+# Создаём add-awg-client
 cat > /usr/local/bin/add-awg-client <<'ADDCLIENT'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -175,11 +161,6 @@ H1 = $(get_param H1)
 H2 = $(get_param H2)
 H3 = $(get_param H3)
 H4 = $(get_param H4)
-I1 = $(get_param I1)
-I2 = $(get_param I2)
-I3 = $(get_param I3)
-I4 = $(get_param I4)
-I5 = $(get_param I5)
 
 [Peer]
 PublicKey = $SERVER_PUBLIC
@@ -213,6 +194,6 @@ systemctl restart "$AWG_SERVICE"
 
 echo ""
 echo "========== ГОТОВО =========="
-echo "EU AmneziaWG сервер настроен под мобильный пресет (с I-параметрами)"
+echo "EU AmneziaWG сервер настроен под мобильный пресет"
 echo "Команда для добавления клиентов: sudo add-awg-client [имя]"
 echo "========================================"
