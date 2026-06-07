@@ -5,18 +5,33 @@ AMNEZIA_DIR="/etc/amnezia/amneziawg"
 SERVER_CONF="$AMNEZIA_DIR/awg0.conf"
 CLIENTS_DIR="$AMNEZIA_DIR/clients"
 AWG_SERVICE="awg-quick@awg0"
+
 INSTALLER_URL="https://raw.githubusercontent.com/wiresock/amneziawg-install/master/amneziawg-install.sh"
 INSTALLER_FILE="/root/amneziawg-install.sh"
 
-RU_GATEWAY_NAME="ru-gateway"
-RU_GATEWAY_CONF="/root/ru-gateway-for-ru.conf"
+# ==================== МОБИЛЬНЫЙ ПРЕСЕТ (с I-параметрами) ====================
+AWG_MTU="1280"
+AWG_JC="3"
+AWG_JMIN="40"
+AWG_JMAX="100"
+AWG_S1="24"
+AWG_S2="64"
+AWG_S3="0"
+AWG_S4="0"
+
+# I1-I5 (рекомендуемый мобильный вариант)
+AWG_I1="<r 128>"
+AWG_I2="<r 64><t>"
+AWG_I3="<r 32>"
+AWG_I4=""
+AWG_I5=""
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "Ошибка: запусти скрипт от root или через sudo"
   exit 1
 fi
 
-echo "========== EU/NL СЕРВЕР: УСТАНОВКА AMNEZIAWG ==========\n"
+echo "========== EU-СЕРВЕР: ЧИСТАЯ УСТАНОВКА AMNEZIAWG (мобильный пресет) =========="
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -25,11 +40,10 @@ apt install -y curl wget qrencode iptables iptables-persistent ca-certificates
 
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
-
 bash "$INSTALLER_FILE"
 
 if [ ! -f "$SERVER_CONF" ]; then
-  echo "Ошибка: серверный конфиг не найден: $SERVER_CONF"
+  echo "Ошибка: серверный конфиг не найден после установки"
   exit 1
 fi
 
@@ -41,9 +55,38 @@ fi
 mkdir -p "$CLIENTS_DIR"
 chmod 700 "$CLIENTS_DIR"
 
-echo "Настройка конфига..."
+echo "Настройка конфига под мобильный пресет..."
 
 cp "$SERVER_CONF" "$SERVER_CONF.backup.$(date +%Y%m%d_%H%M%S)"
+
+# Очищаем клиентов, оставляем только Interface
+awk 'BEGIN{keep=1} /^\[Peer\]/{keep=0} keep{print}' "$SERVER_CONF" > /tmp/awg0.clean
+mv /tmp/awg0.clean "$SERVER_CONF"
+
+# Применяем мобильные параметры + I1-I5
+sed -i '/^MTU = /d; /^Jc = /d; /^Jmin = /d; /^Jmax = /d; /^S1 = /d; /^S2 = /d; /^S3 = /d; /^S4 = /d; /^H1 = /d; /^H2 = /d; /^H3 = /d; /^H4 = /d; /^I1 = /d; /^I2 = /d; /^I3 = /d; /^I4 = /d; /^I5 = /d' "$SERVER_CONF"
+
+cat >> "$SERVER_CONF" <<EOF
+MTU = $AWG_MTU
+Jc = $AWG_JC
+Jmin = $AWG_JMIN
+Jmax = $AWG_JMAX
+S1 = $AWG_S1
+S2 = $AWG_S2
+S3 = $AWG_S3
+S4 = $AWG_S4
+H1 = 1
+H2 = 2
+H3 = 3
+H4 = 4
+EOF
+
+# Добавляем I-параметры
+[ -n "$AWG_I1" ] && echo "I1 = $AWG_I1" >> "$SERVER_CONF"
+[ -n "$AWG_I2" ] && echo "I2 = $AWG_I2" >> "$SERVER_CONF"
+[ -n "$AWG_I3" ] && echo "I3 = $AWG_I3" >> "$SERVER_CONF"
+[ -n "$AWG_I4" ] && echo "I4 = $AWG_I4" >> "$SERVER_CONF"
+[ -n "$AWG_I5" ] && echo "I5 = $AWG_I5" >> "$SERVER_CONF"
 
 # Убираем IPv6
 sed -i -E 's/,[[:space:]]*fd42:[0-9a-fA-F:]+\/[0-9]+//g' "$SERVER_CONF"
@@ -55,26 +98,17 @@ sed -i -E 's/[[:space:]]*::\/0//g' "$SERVER_CONF"
 sed -i '/^PostUp = ip6tables /d' "$SERVER_CONF"
 sed -i '/^PostDown = ip6tables /d' "$SERVER_CONF"
 
-# Гарантируем наличие H1-H4 (нужны для AmneziaWG 2.0)
-for h in H1 H2 H3 H4; do
-  grep -q "^$h = " "$SERVER_CONF" || echo "$h = 1" >> "$SERVER_CONF"
-done
-
-# Forwarding
+# Включаем forwarding
 sysctl -w net.ipv4.ip_forward=1
 echo "net.ipv4.ip_forward=1" > /etc/sysctl.d/99-awg-forward.conf
-sysctl --system >/dev/null
+sysctl --system
 
-systemctl enable "$AWG_SERVICE"
-systemctl restart "$AWG_SERVICE"
-
-# add-awg-client с поддержкой AmneziaWG 2.0
+# Создаём add-awg-client с полным набором параметров (включая I)
 cat > /usr/local/bin/add-awg-client <<'ADDCLIENT'
 #!/usr/bin/env bash
 set -euo pipefail
 
 SERVER_CONF="/etc/amnezia/amneziawg/awg0.conf"
-AWG_SERVICE="awg-quick@awg0"
 CLIENTS_DIR="/etc/amnezia/amneziawg/clients"
 
 CLIENT_NAME="${1:-client_$(date +%Y%m%d_%H%M%S)}"
@@ -85,7 +119,7 @@ if [ "$(id -u)" -ne 0 ]; then
 fi
 
 if [ ! -f "$SERVER_CONF" ]; then
-  echo "Ошибка: серверный конфиг не найден: $SERVER_CONF"
+  echo "Ошибка: серверный конфиг не найден"
   exit 1
 fi
 
@@ -100,16 +134,7 @@ chmod 700 "$CLIENTS_DIR"
 SERVER_PRIVATE=$(grep "^PrivateKey" "$SERVER_CONF" | awk '{print $3}')
 SERVER_PUBLIC=$(echo "$SERVER_PRIVATE" | awg pubkey)
 SERVER_PORT=$(grep "^ListenPort" "$SERVER_CONF" | awk '{print $3}')
-
-SERVER_IP=$(curl -4 -s ifconfig.me || true)
-if [ -z "$SERVER_IP" ]; then
-  SERVER_IP=$(curl -4 -s icanhazip.com | tr -d '\n' || true)
-fi
-
-if [ -z "$SERVER_IP" ]; then
-  echo "Ошибка: не удалось определить внешний IPv4 сервера"
-  exit 1
-fi
+SERVER_IP=$(curl -4 -s ifconfig.me || curl -4 -s icanhazip.com)
 
 CLIENT_IP=""
 for i in $(seq 2 254); do
@@ -121,7 +146,7 @@ for i in $(seq 2 254); do
 done
 
 if [ -z "$CLIENT_IP" ]; then
-  echo "Ошибка: свободных IP в подсети 10.66.66.0/24 не найдено"
+  echo "Ошибка: нет свободных IP"
   exit 1
 fi
 
@@ -129,51 +154,32 @@ CLIENT_PRIVATE=$(awg genkey)
 CLIENT_PUBLIC=$(echo "$CLIENT_PRIVATE" | awg pubkey)
 CLIENT_PSK=$(awg genpsk)
 
-JC=$(grep "^Jc" "$SERVER_CONF" | awk '{print $3}')
-JMIN=$(grep "^Jmin" "$SERVER_CONF" | awk '{print $3}')
-JMAX=$(grep "^Jmax" "$SERVER_CONF" | awk '{print $3}')
-S1=$(grep "^S1" "$SERVER_CONF" | awk '{print $3}')
-S2=$(grep "^S2" "$SERVER_CONF" | awk '{print $3}')
-S3=$(grep "^S3" "$SERVER_CONF" | awk '{print $3}')
-S4=$(grep "^S4" "$SERVER_CONF" | awk '{print $3}')
-H1=$(grep "^H1" "$SERVER_CONF" | awk '{print $3}')
-H2=$(grep "^H2" "$SERVER_CONF" | awk '{print $3}')
-H3=$(grep "^H3" "$SERVER_CONF" | awk '{print $3}')
-H4=$(grep "^H4" "$SERVER_CONF" | awk '{print $3}')
+get_param() {
+  grep "^$1" "$SERVER_CONF" | awk '{print $3}' | head -1
+}
 
-I1=$(grep "^I1" "$SERVER_CONF" | awk '{print $3}' || true)
-I2=$(grep "^I2" "$SERVER_CONF" | awk '{print $3}' || true)
-I3=$(grep "^I3" "$SERVER_CONF" | awk '{print $3}' || true)
-I4=$(grep "^I4" "$SERVER_CONF" | awk '{print $3}' || true)
-I5=$(grep "^I5" "$SERVER_CONF" | awk '{print $3}' || true)
-
-CLIENT_CONF="$CLIENTS_DIR/${CLIENT_NAME}.conf"
-
-cat > "$CLIENT_CONF" <<EOF
+cat > "$CLIENTS_DIR/${CLIENT_NAME}.conf" <<EOF
 [Interface]
 PrivateKey = $CLIENT_PRIVATE
 Address = $CLIENT_IP/32
 DNS = 1.1.1.1, 1.0.0.1
-Jc = $JC
-Jmin = $JMIN
-Jmax = $JMAX
-S1 = $S1
-S2 = $S2
-S3 = $S3
-S4 = $S4
-H1 = $H1
-H2 = $H2
-H3 = $H3
-H4 = $H4
-EOF
-
-if [ -n "$I1" ]; then echo "I1 = $I1" >> "$CLIENT_CONF"; fi
-if [ -n "$I2" ]; then echo "I2 = $I2" >> "$CLIENT_CONF"; fi
-if [ -n "$I3" ]; then echo "I3 = $I3" >> "$CLIENT_CONF"; fi
-if [ -n "$I4" ]; then echo "I4 = $I4" >> "$CLIENT_CONF"; fi
-if [ -n "$I5" ]; then echo "I5 = $I5" >> "$CLIENT_CONF"; fi
-
-cat >> "$CLIENT_CONF" <<EOF
+MTU = $(get_param MTU)
+Jc = $(get_param Jc)
+Jmin = $(get_param Jmin)
+Jmax = $(get_param Jmax)
+S1 = $(get_param S1)
+S2 = $(get_param S2)
+S3 = $(get_param S3)
+S4 = $(get_param S4)
+H1 = $(get_param H1)
+H2 = $(get_param H2)
+H3 = $(get_param H3)
+H4 = $(get_param H4)
+I1 = $(get_param I1)
+I2 = $(get_param I2)
+I3 = $(get_param I3)
+I4 = $(get_param I4)
+I5 = $(get_param I5)
 
 [Peer]
 PublicKey = $SERVER_PUBLIC
@@ -183,14 +189,7 @@ AllowedIPs = 0.0.0.0/0
 PersistentKeepalive = 25
 EOF
 
-chmod 600 "$CLIENT_CONF"
-
-# Если создаём ru-gateway — сразу сохраняем чистый конфиг в /root/
-if [[ "$CLIENT_NAME" == ru-gateway* ]]; then
-    cp "$CLIENT_CONF" /root/ru-gateway-for-ru.conf
-    chmod 600 /root/ru-gateway-for-ru.conf
-    echo "Также сохранён чистый конфиг: /root/ru-gateway-for-ru.conf"
-fi
+chmod 600 "$CLIENTS_DIR/${CLIENT_NAME}.conf"
 
 cat >> "$SERVER_CONF" <<EOF
 
@@ -203,29 +202,17 @@ EOF
 
 systemctl restart "$AWG_SERVICE"
 
-echo "Клиент добавлен: $CLIENT_NAME ($CLIENT_IP/32)"
-echo "Файл: $CLIENT_CONF"
+echo "Клиент добавлен: $CLIENT_NAME ($CLIENT_IP)"
+echo "Файл: $CLIENTS_DIR/${CLIENT_NAME}.conf"
 ADDCLIENT
 
 chmod +x /usr/local/bin/add-awg-client
 
-# Создаём ru-gateway конфиг
-add-awg-client "$RU_GATEWAY_NAME" > /tmp/ru-gateway-output.txt
-awk '/^\[Interface\]/{flag=1} flag{print}' /tmp/ru-gateway-output.txt > "$RU_GATEWAY_CONF"
-chmod 600 "$RU_GATEWAY_CONF"
+systemctl enable "$AWG_SERVICE"
+systemctl restart "$AWG_SERVICE"
 
 echo ""
-echo "Готово. EU/NL AmneziaWG настроен."
-echo "Команда для клиентов: sudo add-awg-client [имя]"
-echo ""
-echo "Конфиг для RU-сервера: $RU_GATEWAY_CONF"
-
-read -rp "Хочешь сразу передать его на RU-сервер через scp? Введи IP RU-сервера (или Enter чтобы пропустить): " RU_SERVER_IP
-
-if [ -n "$RU_SERVER_IP" ]; then
-  echo "Передаю файл..."
-  scp "$RU_GATEWAY_CONF" "root@$RU_SERVER_IP:/root/ru-gateway-for-ru.conf"
-  echo "Готово. Файл на RU-сервере: /root/ru-gateway-for-ru.conf"
-else
-  echo "Пропущено. Перенеси файл вручную на RU-сервер как /root/ru-gateway-for-ru.conf"
-fi
+echo "========== ГОТОВО =========="
+echo "EU AmneziaWG сервер настроен под мобильный пресет (с I-параметрами)"
+echo "Команда для добавления клиентов: sudo add-awg-client [имя]"
+echo "========================================"
