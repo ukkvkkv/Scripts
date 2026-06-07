@@ -200,7 +200,7 @@ PresharedKey = $CLIENT_PSK
 AllowedIPs = $CLIENT_IP/32
 EOF
 
-systemctl restart "$AWG_SERVICE"
+systemctl restart "awg-quick@awg0"
 
 echo "Клиент добавлен: $CLIENT_NAME ($CLIENT_IP)"
 echo "Файл: $CLIENTS_DIR/${CLIENT_NAME}.conf"
