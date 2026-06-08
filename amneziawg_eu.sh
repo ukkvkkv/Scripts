@@ -24,9 +24,11 @@ apt install -y curl wget qrencode iptables iptables-persistent ca-certificates
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
 
-# Полностью автоматическая установка
-# Отправляем достаточно много Enter'ов, чтобы пройти все вопросы установщика
-printf '\n%.0s' {1..100} | bash "$INSTALLER_FILE" || true
+# Полностью автоматическая установка через AUTO_INSTALL=y
+echo "Запуск официального установщика в неинтерактивном режиме (AUTO_INSTALL=y)..."
+export AUTO_INSTALL=y
+export AWG_SKIP_PUBLIC_IP_LOOKUP=y
+bash "$INSTALLER_FILE"
 
 if [ ! -f "$SERVER_CONF" ]; then
   echo "Ошибка: серверный конфиг не найден после установки"
@@ -169,6 +171,6 @@ systemctl restart "$AWG_SERVICE"
 
 echo ""
 echo "========== ГОТОВО =========="
-echo "EU AmneziaWG сервер настроен полностью автоматически"
+echo "EU AmneziaWG сервер полностью настроен автоматизированно"
 echo "Команда для добавления клиентов: sudo add-awg-client [имя]"
 echo "========================================"
