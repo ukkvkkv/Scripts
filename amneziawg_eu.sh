@@ -9,22 +9,12 @@ AWG_SERVICE="awg-quick@awg0"
 INSTALLER_URL="https://raw.githubusercontent.com/wiresock/amneziawg-install/master/amneziawg-install.sh"
 INSTALLER_FILE="/root/amneziawg-install.sh"
 
-# ==================== МОБИЛЬНЫЙ ПРЕСЕТ ====================
-AWG_MTU="1280"
-AWG_JC="3"
-AWG_JMIN="40"
-AWG_JMAX="100"
-AWG_S1="24"
-AWG_S2="64"
-AWG_S3="0"
-AWG_S4="0"
-
 if [ "$(id -u)" -ne 0 ]; then
   echo "Ошибка: запусти скрипт от root или через sudo"
   exit 1
 fi
 
-echo "========== EU-СЕРВЕР: ЧИСТАЯ УСТАНОВКА AMNEZIAWG (мобильный пресет) =========="
+echo "========== EU-СЕРВЕР: ЧИСТАЯ УСТАНОВКА AMNEZIAWG =========="
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -50,31 +40,13 @@ fi
 mkdir -p "$CLIENTS_DIR"
 chmod 700 "$CLIENTS_DIR"
 
-echo "Настройка конфига под мобильный пресет..."
+echo "Очистка конфига и настройка..."
 
 cp "$SERVER_CONF" "$SERVER_CONF.backup.$(date +%Y%m%d_%H%M%S)"
 
 # Очищаем клиентов, оставляем только Interface
 awk 'BEGIN{keep=1} /^\[Peer\]/{keep=0} keep{print}' "$SERVER_CONF" > /tmp/awg0.clean
 mv /tmp/awg0.clean "$SERVER_CONF"
-
-# Применяем мобильные параметры
-sed -i '/^MTU = /d; /^Jc = /d; /^Jmin = /d; /^Jmax = /d; /^S1 = /d; /^S2 = /d; /^S3 = /d; /^S4 = /d; /^H1 = /d; /^H2 = /d; /^H3 = /d; /^H4 = /d' "$SERVER_CONF"
-
-cat >> "$SERVER_CONF" <<EOF
-MTU = $AWG_MTU
-Jc = $AWG_JC
-Jmin = $AWG_JMIN
-Jmax = $AWG_JMAX
-S1 = $AWG_S1
-S2 = $AWG_S2
-S3 = $AWG_S3
-S4 = $AWG_S4
-H1 = 1
-H2 = 2
-H3 = 3
-H4 = 4
-EOF
 
 # Убираем IPv6
 sed -i -E 's/,[[:space:]]*fd42:[0-9a-fA-F:]+\/[0-9]+//g' "$SERVER_CONF"
@@ -196,6 +168,6 @@ systemctl restart "$AWG_SERVICE"
 
 echo ""
 echo "========== ГОТОВО =========="
-echo "EU AmneziaWG сервер настроен под мобильный пресет"
+echo "EU AmneziaWG сервер настроен (дефолтные параметры от установщика)"
 echo "Команда для добавления клиентов: sudo add-awg-client [имя]"
 echo "========================================"
