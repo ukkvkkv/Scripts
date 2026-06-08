@@ -14,7 +14,7 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-echo "========== EU-СЕРВЕР: ЧИСТАЯ УСТАНОВКА AMNEZIAWG =========="
+echo "========== EU-СЕРВЕР: ПОЛНО АВТОМАТИЧЕСКАЯ УСТАНОВКА AMNEZIAWG =========="
 
 export DEBIAN_FRONTEND=noninteractive
 
@@ -24,8 +24,9 @@ apt install -y curl wget qrencode iptables iptables-persistent ca-certificates
 curl -fsSL "$INSTALLER_URL" -o "$INSTALLER_FILE"
 chmod +x "$INSTALLER_FILE"
 
-# Запускаем установщик полностью автоматически (принимаем все дефолтные ответы)
-printf '\n\n\n\n\n\n' | bash "$INSTALLER_FILE" || true
+# Полностью автоматическая установка
+# Отправляем достаточно много Enter'ов, чтобы пройти все вопросы установщика
+printf '\n%.0s' {1..100} | bash "$INSTALLER_FILE" || true
 
 if [ ! -f "$SERVER_CONF" ]; then
   echo "Ошибка: серверный конфиг не найден после установки"
@@ -168,6 +169,6 @@ systemctl restart "$AWG_SERVICE"
 
 echo ""
 echo "========== ГОТОВО =========="
-echo "EU AmneziaWG сервер настроен (дефолтные параметры от установщика)"
+echo "EU AmneziaWG сервер настроен полностью автоматически"
 echo "Команда для добавления клиентов: sudo add-awg-client [имя]"
 echo "========================================"
