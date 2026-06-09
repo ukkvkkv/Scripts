@@ -24,7 +24,7 @@ random_port() {
 
 echo "=== Установка RU Xray VLESS entry (XHTTP + Reality) с выходом на EU ==="
 
-echo "Настройка роутинга: все .ru сайты — напрямую, остальное — через мультихоп"
+echo "Роутинг: .ru / .рф / .su — напрямую, всё остальное — через мультихоп"
 
 PARAMS="/root/eu-params.env"
 if [[ -f "$PARAMS" ]]; then
@@ -89,7 +89,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
     "rules": [
       {
         "type": "field",
-        "domain": ["domain:ru"],
+        "domain": ["domain:ru", "domain:рф", "domain:su"],
         "outboundTag": "direct"
       },
       {
@@ -117,7 +117,7 @@ CLIENT_LINK="vless://$RU_UUID@$PUBLIC_IP:$RU_PORT?type=xhttp&security=reality&pb
 
 echo
  echo "=== RU Xray VLESS готов (с роутингом) ==="
- echo "Роутинг: все домены .ru — напрямую, остальное — через EU мультихоп"
+ echo "Роутинг: .ru / .рф / .su — напрямую, всё остальное — через EU мультихоп"
  echo "Первый пользователь:"
  echo "$CLIENT_LINK"
 
