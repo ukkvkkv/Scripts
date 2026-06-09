@@ -15,15 +15,10 @@ get_public_ip() {
   hostname -I | awk '{print $1}'
 }
 
-port_in_use() {
-  ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"
-}
+port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"; }
 
 random_port() {
-  for _ in {1..100}; do
-    p=$(shuf -i 20000-60000 -n 1)
-    ! port_in_use "$p" && { echo "$p"; return 0; }
-  done
+  for _ in {1..100}; do p=$(shuf -i 20000-60000 -n 1); ! port_in_use "$p" && { echo "$p"; return 0; }; done
   echo "Нет свободного порта" >&2; exit 1
 }
 
@@ -62,17 +57,7 @@ RU_PRIVATE_KEY=$(echo "$KEYS" | grep "Private key:" | head -n1 | awk '{print $3}
 RU_PUBLIC_KEY=$(echo "$KEYS" | grep "Public key:" | head -n1 | awk '{print $3}')
 RU_SHORT_ID=$(openssl rand -hex 8)
 
-# Fingerprint choice
- echo "Fingerprint для Reality (RKN ломает Chrome):"
- echo "1) firefox (рекомендую)"
- echo "2) random"
- echo "3) chrome"
- read -rp "Выбор (1-3): " FP_CHOICE
-case $FP_CHOICE in
-  2) FP="random" ;;
-  3) FP="chrome" ;;
-  *) FP="firefox" ;;
-esac
+FP="firefox"
 
 if [[ -f /usr/local/etc/xray/config.json ]]; then
   cp /usr/local/etc/xray/config.json "/usr/local/etc/xray/config.json.backup.$(date +%F_%T)"
@@ -80,63 +65,24 @@ fi
 
 cat > /usr/local/etc/xray/config.json <<EOF
 {
-  "log": { "loglevel": "warning" },
-  "inbounds": [
-    {
-      "tag": "vless-ru-in",
-      "listen": "0.0.0.0",
-      "port": $RU_PORT,
-      "protocol": "vless",
-      "settings": {
-        "clients": [ { "id": "$RU_UUID", "email": "multihop@ru", "flow": "xtls-rprx-vision" } ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "xhttp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "$RU_DOMAIN:443",
-          "xver": 0,
-          "serverNames": ["$RU_DOMAIN"],
-          "privateKey": "$RU_PRIVATE_KEY",
-          "shortIds": ["$RU_SHORT_ID"]
-        },
-        "sockopt": { "tcpFastOpen": true }
-      },
-      "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
-    }
-  ],
-  "outbounds": [
-    {
-      "tag": "vless-to-eu",
-      "protocol": "vless",
-      "settings": {
-        "vnext": [ {
-          "address": "$EU_IP",
-          "port": $EU_PORT,
-          "users": [ { "id": "$EU_UUID", "encryption": "none", "flow": "$EU_FLOW" } ]
-        } ]
-      },
-      "streamSettings": {
-        "network": "$EU_NETWORK",
-        "security": "reality",
-        "realitySettings": {
-          "serverName": "$EU_SERVER_NAME",
-          "fingerprint": "$FP",
-          "publicKey": "$EU_PUBLIC_KEY",
-          "shortId": "$EU_SHORT_ID",
-          "spiderX": "/"
-        },
-        "sockopt": { "tcpFastOpen": true }
-      }
-    },
-    { "tag": "direct", "protocol": "freedom" },
-    { "tag": "block", "protocol": "blackhole" }
-  ],
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [ { "type": "field", "inboundTag": ["vless-ru-in"], "outboundTag": "vless-to-eu" } ]
+  "log": { "loglevel": "none" },
+  "inbounds": [{
+    "tag": "vless-ru-in",
+    "listen": "0.0.0.0",
+    "port": $RU_PORT,
+    "protocol": "vless",
+    "settings": { "clients": [ { "id": "$RU_UUID", "email": "multihop@ru", "flow": "xtls-rprx-vision" } ], "decryption": "none" },
+    "streamSettings": { "network": "xhttp", "security": "reality", "realitySettings": { "show": false, "dest": "$RU_DOMAIN:443", "xver": 0, "serverNames": ["$RU_DOMAIN"], "privateKey": "$RU_PRIVATE_KEY", "shortIds": ["$RU_SHORT_ID"] }, "sockopt": { "tcpFastOpen": true }
+  }],
+  "outbounds": [{
+    "tag": "vless-to-eu",
+    "protocol": "vless",
+    "settings": { "vnext": [ { "address": "$EU_IP", "port": $EU_PORT, "users": [ { "id": "$EU_UUID", "encryption": "none", "flow": "$EU_FLOW" } ] } ] },
+    "streamSettings": { "network": "$EU_NETWORK", "security": "reality", "realitySettings": { "serverName": "$EU_SERVER_NAME", "fingerprint": "$FP", "publicKey": "$EU_PUBLIC_KEY", "shortId": "$EU_SHORT_ID", "spiderX": "/" }, "sockopt": { "tcpFastOpen": true } }
+  },
+  { "tag": "direct", "protocol": "freedom" },
+  { "tag": "block", "protocol": "blackhole" } ],
+  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "inboundTag": ["vless-ru-in"], "outboundTag": "vless-to-eu" } ]
   }
 }
 EOF
@@ -156,16 +102,17 @@ CLIENT_LINK="vless://$RU_UUID@$PUBLIC_IP:$RU_PORT?type=xhttp&security=reality&pb
 
 echo
  echo "=== RU Xray VLESS готов ==="
- echo "Клиентская ссылка (подключайся к RU):"
+ echo "Первый пользователь:"
  echo "$CLIENT_LINK"
- echo
- echo "RU_PORT: $RU_PORT"
- echo "RU_UUID: $RU_UUID"
- echo "RU_PUBLIC_KEY: $RU_PUBLIC_KEY"
- echo "Fingerprint: $FP"
- echo "SNI RU: $RU_DOMAIN"
- echo "Транспорт RU: XHTTP + Reality"
- echo "Выход на EU: raw + Reality + Vision (fingerprint $FP)"
+
+# === Автоматическая установка команды add-vless ===
+echo
+ echo "Устанавливаю команду add-vless..."
+curl -fsSL https://raw.githubusercontent.com/ukkvkkv/Scripts/main/add-vless -o /usr/local/bin/add-vless
+chmod +x /usr/local/bin/add-vless
+
+echo "Готово! Теперь можешь использовать команду:"
+ echo "  add-vless          # добавить нового пользователя и получить ссылку"
 
 if [[ -f "$PARAMS" ]]; then
   read -rp "Удалить eu-params.env? [y/N]: " DEL
