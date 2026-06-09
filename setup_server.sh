@@ -40,12 +40,8 @@ echo "=============================="
 echo "НОВЫЙ SSH ПОРТ: $NEW_PORT"
 echo "=============================="
 
-sed -i '/^#\?PasswordAuthentication /d' /etc/ssh/sshd_config
+# Password authentication left enabled (as requested)
 sed -i '/^#\?PubkeyAuthentication /d' /etc/ssh/sshd_config
-sed -i '/^#\?ChallengeResponseAuthentication /d' /etc/ssh/sshd_config
-echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
 echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
-echo "ChallengeResponseAuthentication no" >> /etc/ssh/sshd_config
-echo "UsePAM no" >> /etc/ssh/sshd_config
 
 systemctl restart ssh || systemctl restart sshd
