@@ -24,6 +24,8 @@ random_port() {
 
 echo "=== Установка RU Xray VLESS entry (XHTTP + Reality) с выходом на EU ==="
 
+echo "Настройка роутинга: все .ru сайты — напрямую, остальное — через мультихоп"
+
 PARAMS="/root/eu-params.env"
 if [[ -f "$PARAMS" ]]; then
   source "$PARAMS"
@@ -82,7 +84,20 @@ cat > /usr/local/etc/xray/config.json <<EOF
   },
   { "tag": "direct", "protocol": "freedom" },
   { "tag": "block", "protocol": "blackhole" } ],
-  "routing": { "domainStrategy": "AsIs", "rules": [ { "type": "field", "inboundTag": ["vless-ru-in"], "outboundTag": "vless-to-eu" } ]
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      {
+        "type": "field",
+        "domain": ["domain:ru"],
+        "outboundTag": "direct"
+      },
+      {
+        "type": "field",
+        "inboundTag": ["vless-ru-in"],
+        "outboundTag": "vless-to-eu"
+      }
+    ]
   }
 }
 EOF
@@ -101,18 +116,17 @@ PUBLIC_IP=$(get_public_ip)
 CLIENT_LINK="vless://$RU_UUID@$PUBLIC_IP:$RU_PORT?type=xhttp&security=reality&pbk=$RU_PUBLIC_KEY&sid=$RU_SHORT_ID&sni=$RU_DOMAIN&flow=xtls-rprx-vision&fp=$FP#VLESS-XHTTP-RU-Multihop"
 
 echo
- echo "=== RU Xray VLESS готов ==="
+ echo "=== RU Xray VLESS готов (с роутингом) ==="
+ echo "Роутинг: все домены .ru — напрямую, остальное — через EU мультихоп"
  echo "Первый пользователь:"
  echo "$CLIENT_LINK"
 
-# === Автоматическая установка команды add-vless ===
-echo
- echo "Устанавливаю команду add-vless..."
+# Автоматическая установка add-vless
 curl -fsSL https://raw.githubusercontent.com/ukkvkkv/Scripts/main/add-vless -o /usr/local/bin/add-vless
 chmod +x /usr/local/bin/add-vless
 
-echo "Готово! Теперь можешь использовать команду:"
- echo "  add-vless          # добавить нового пользователя и получить ссылку"
+echo
+ echo "Команда add-vless установлена. Используй: add-vless"
 
 if [[ -f "$PARAMS" ]]; then
   read -rp "Удалить eu-params.env? [y/N]: " DEL
