@@ -8,27 +8,20 @@ fi
 
 CONFIG="/usr/local/etc/xray/config.json"
 if [[ ! -f "$CONFIG" ]]; then
-  echo "Xray config не найден. Сначала запусти vless_eu.sh или vless_ru.sh"
+  echo "Xray config не найден"
+  exit 1
+fi
+
+# Проверяем, что это именно RU-сервер
+if ! jq -e '.inbounds[] | select(.tag == "vless-ru-in")' "$CONFIG" >/dev/null 2>&1; then
+  echo "Команда add-vless предназначена только для российского (RU) сервера"
   exit 1
 fi
 
 NEW_UUID=$(cat /proc/sys/kernel/random/uuid)
-
-# Определяем роль сервера по наличию тегов
-if jq -e '.inbounds[] | select(.tag == "vless-ru-in")' "$CONFIG" >/dev/null 2>&1; then
-  ROLE="ru"
-  INBOUND_TAG="vless-ru-in"
-  NETWORK="xhttp"
-  FP="firefox"
-elif jq -e '.inbounds[] | select(.tag == "vless-eu-in")' "$CONFIG" >/dev/null 2>&1; then
-  ROLE="eu"
-  INBOUND_TAG="vless-eu-in"
-  NETWORK="raw"
-  FP="firefox"
-else
-  echo "Неизвестный тип конфига Xray"
-  exit 1
-fi
+INBOUND_TAG="vless-ru-in"
+NETWORK="xhttp"
+FP="firefox"
 
 # Добавляем нового клиента
 jq --arg uuid "$NEW_UUID" --arg tag "$INBOUND_TAG" '
@@ -43,25 +36,16 @@ sleep 1
 PUBLIC_IP=$(curl -4fsSL --max-time 5 https://ifconfig.me 2>/dev/null || hostname -I | awk '{print $1}')
 PORT=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .port' "$CONFIG")
 
-if [[ "$ROLE" == "ru" ]]; then
-  # Берём параметры из конфига для ссылки
-  PBK=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.publicKey? // empty' "$CONFIG" 2>/dev/null || true)
-  if [[ -z "$PBK" ]]; then
-    # Если публичный ключ не в inbound (обычно он в outbound), берём из outbound
-    PBK=$(jq -r '.outbounds[] | select(.tag=="vless-to-eu") | .streamSettings.realitySettings.publicKey? // empty' "$CONFIG" 2>/dev/null || true)
-  fi
-  SID=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.shortIds[0]? // empty' "$CONFIG")
-  SNI=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.serverNames[0]? // empty' "$CONFIG")
-
-  echo
-  echo "=== Новый пользователь добавлен на RU ==="
-  echo "UUID: $NEW_UUID"
-  echo
-  echo "Готовая клиентская ссылка:"
-  echo "vless://$NEW_UUID@$PUBLIC_IP:$PORT?type=$NETWORK&security=reality&pbk=$PBK&sid=$SID&sni=$SNI&flow=xtls-rprx-vision&fp=$FP#VLESS-Multihop-RU"
-else
-  echo
-  echo "=== Новый пользователь добавлен на EU ==="
-  echo "UUID: $NEW_UUID"
-  echo "(Этот UUID нужен только для подключения RU-сервера к EU)"
+PBK=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.publicKey? // empty' "$CONFIG" 2>/dev/null || true)
+if [[ -z "$PBK" ]]; then
+  PBK=$(jq -r '.outbounds[] | select(.tag=="vless-to-eu") | .streamSettings.realitySettings.publicKey? // empty' "$CONFIG" 2>/dev/null || true)
 fi
+SID=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.shortIds[0]? // empty' "$CONFIG")
+SNI=$(jq -r --arg tag "$INBOUND_TAG" '.inbounds[] | select(.tag==$tag) | .streamSettings.realitySettings.serverNames[0]? // empty' "$CONFIG")
+
+ echo
+ echo "=== Новый пользователь добавлен ==="
+ echo "UUID: $NEW_UUID"
+ echo
+ echo "Готовая клиентская ссылка:"
+ echo "vless://$NEW_UUID@$PUBLIC_IP:$PORT?type=$NETWORK&security=reality&pbk=$PBK&sid=$SID&sni=$SNI&flow=xtls-rprx-vision&fp=$FP#VLESS-Multihop-RU"
