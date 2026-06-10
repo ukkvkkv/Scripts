@@ -40,7 +40,10 @@ echo "=============================="
 echo "НОВЫЙ SSH ПОРТ: $NEW_PORT"
 echo "=============================="
 
-# Password authentication left enabled (as requested)
+# Disable password authentication (reverted as requested)
+sed -i '/^#\?PasswordAuthentication /d' /etc/ssh/sshd_config
+echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+
 sed -i '/^#\?PubkeyAuthentication /d' /etc/ssh/sshd_config
 echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
