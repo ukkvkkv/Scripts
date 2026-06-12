@@ -151,14 +151,29 @@ fi
 
 echo
  echo "Устанавливаю/обновляю Hysteria2 + sing-box..."
+
+# === Установка Hysteria2 ===
 HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/)
 
-# Установка sing-box
-bash <(curl -fsSL https://sing-box.sagernet.org/install.sh) || true
+# === Надёжная установка sing-box ===
+SINGBOX_VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep tag_name | cut -d '"' -f 4)
+
+wget -q https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION#v}-linux-amd64.tar.gz -O /tmp/sing-box.tar.gz
+
+tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /usr/local/bin sing-box
+chmod +x /usr/local/bin/sing-box
+
+if [ ! -f /usr/local/bin/sing-box ]; then
+  echo "Ошибка: не удалось установить sing-box"
+  exit 1
+fi
+
+echo "sing-box установлен: $(/usr/local/bin/sing-box version | head -n1)"
 
 systemctl stop hysteria-server.service 2>/dev/null || true
 systemctl stop sing-box.service 2>/dev/null || true
 
+# === Certbot ===
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
   CERTBOT_ARGS+=(-m "$EMAIL")
@@ -170,7 +185,7 @@ certbot "${CERTBOT_ARGS[@]}"
 
 mkdir -p /etc/hysteria /etc/sing-box
 
-# sing-box конфиг (подключается к EU + отдаёт публичный SOCKS5 для Telegram)
+# === sing-box конфиг ===
 cat > /etc/sing-box/config.json <<EOF_SINGBOX
 {
   "log": {
@@ -203,15 +218,7 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
         "enabled": true,
         "server_name": "${EU_SNI}",
         "insecure": ${EU_INSECURE}
-      },
-      "bandwidth": {
-        "up": "0 gbps",
-        "down": "0 gbps"
       }
-    },
-    {
-      "type": "direct",
-      "tag": "direct"
     }
   ],
   "route": {
@@ -225,28 +232,24 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
 }
 EOF_SINGBOX
 
+# === systemd для sing-box ===
 cat > /etc/systemd/system/sing-box.service << 'EOF_SERVICE'
 [Unit]
 Description=sing-box service
-Documentation=https://sing-box.sagernet.org
-After=network.target nss-lookup.target
+After=network.target
 
 [Service]
-User=root
-WorkingDirectory=/etc/sing-box
-CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
-AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+Type=simple
 ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
-ExecReload=/usr/local/bin/sing-box reload
 Restart=on-failure
 RestartSec=5
-LimitNOFILE=infinity
+LimitNOFILE=65535
 
 [Install]
 WantedBy=multi-user.target
 EOF_SERVICE
 
-# Hysteria2 Server конфиг (маршрутизация .ru direct, остальное через sing-box)
+# === Hysteria2 Server ===
 cat > /etc/hysteria/config.yaml <<EOF_SERVER
 listen: :${RU_PORT}
 
@@ -297,7 +300,7 @@ systemctl restart sing-box.service
 sleep 3
 
 if ! systemctl is-active --quiet sing-box.service; then
-  echo "Ошибка: sing-box.service не запустился. Логи:"
+  echo "Ошибка: sing-box.service не запустился"
   journalctl --no-pager -e -u sing-box.service
   exit 1
 fi
@@ -307,26 +310,24 @@ systemctl restart hysteria-server.service
 sleep 2
 
 if ! systemctl is-active --quiet hysteria-server.service; then
-  echo "Ошибка: hysteria-server.service не запустился. Логи:"
+  echo "Ошибка: hysteria-server.service не запустился"
   journalctl --no-pager -e -u hysteria-server.service
   exit 1
 fi
 
 echo
- echo "Проверяю sing-box (локальный SOCKS5 до EU): 127.0.0.1:${LOCAL_SOCKS_PORT}"
+ echo "Проверяю соединение через sing-box..."
 if ! wait_tcp_port "$LOCAL_SOCKS_PORT"; then
-  echo "Ошибка: sing-box порт не открылся. Логи:"
-  journalctl --no-pager -e -u sing-box.service
+  echo "Ошибка: порт sing-box не открылся"
   exit 1
 fi
 
-EU_EXIT_IP=$(curl --socks5-hostname "127.0.0.1:${LOCAL_SOCKS_PORT}" -4fsSL --max-time 20 https://api.ipify.org || true)
+EU_EXIT_IP=$(curl --socks5-hostname "127.0.0.1:${LOCAL_SOCKS_PORT}" -4fsSL --max-time 15 https://api.ipify.org || true)
 if [[ -z "$EU_EXIT_IP" ]]; then
-  echo "Ошибка: через sing-box до EU не удалось выйти в интернет."
-  journalctl --no-pager -e -u sing-box.service
+  echo "Ошибка: не удалось выйти через EU"
   exit 1
 fi
- echo "OK: sing-box + Hysteria2 работает."
+ echo "OK: sing-box + Hysteria2 работает"
 
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
