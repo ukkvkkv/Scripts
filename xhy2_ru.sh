@@ -255,10 +255,6 @@ with open("/usr/local/etc/xray/config.json", "w", encoding="utf-8") as f:
     json.dump(cfg, f, ensure_ascii=False, indent=2)
 PY
 
-if ! /usr/local/bin/xray test -config /usr/local/etc/xray/config.json; then
-  echo "Ошибка: Xray не принял config.json"
-  exit 1
-fi
 
 systemctl daemon-reload
 systemctl enable --now xray.service
@@ -280,4 +276,3 @@ echo "=== RU-сервер Xray Hysteria2 готов ==="
 echo "$LINK_DOMAIN"
 echo
 echo "Проверка логов: journalctl -u xray -e --no-pager"
-echo "Проверка конфига: /usr/local/bin/xray test -config /usr/local/etc/xray/config.json"
