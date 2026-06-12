@@ -92,6 +92,34 @@ install_xray() {
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ install
 }
 
+prepare_xray_cert() {
+  local domain="$1"
+  local cert_dir="/usr/local/etc/xray/certs/${domain}"
+  mkdir -p "$cert_dir"
+  cp -f "/etc/letsencrypt/live/${domain}/fullchain.pem" "$cert_dir/fullchain.pem"
+  cp -f "/etc/letsencrypt/live/${domain}/privkey.pem" "$cert_dir/privkey.pem"
+  chown -R nobody:nogroup "$cert_dir" 2>/dev/null || chown -R nobody:nobody "$cert_dir" 2>/dev/null || true
+  chmod 755 /usr/local/etc/xray /usr/local/etc/xray/certs "$cert_dir"
+  chmod 644 "$cert_dir/fullchain.pem"
+  chmod 600 "$cert_dir/privkey.pem"
+
+  # Чтобы после продления Let's Encrypt Xray тоже получил свежий сертификат.
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat > "/etc/letsencrypt/renewal-hooks/deploy/xray-copy-${domain}.sh" <<HOOK
+#!/usr/bin/env bash
+set -e
+mkdir -p "$cert_dir"
+cp -f "/etc/letsencrypt/live/${domain}/fullchain.pem" "$cert_dir/fullchain.pem"
+cp -f "/etc/letsencrypt/live/${domain}/privkey.pem" "$cert_dir/privkey.pem"
+chown -R nobody:nogroup "$cert_dir" 2>/dev/null || chown -R nobody:nobody "$cert_dir" 2>/dev/null || true
+chmod 755 /usr/local/etc/xray /usr/local/etc/xray/certs "$cert_dir"
+chmod 644 "$cert_dir/fullchain.pem"
+chmod 600 "$cert_dir/privkey.pem"
+systemctl restart xray.service 2>/dev/null || true
+HOOK
+  chmod +x "/etc/letsencrypt/renewal-hooks/deploy/xray-copy-${domain}.sh"
+}
+
 echo "=== Установка RU Hysteria2 entry-сервера на ядре Xray с выходом через EU ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
@@ -147,6 +175,7 @@ else
   CERTBOT_ARGS+=(--register-unsafely-without-email)
 fi
 certbot "${CERTBOT_ARGS[@]}"
+prepare_xray_cert "$RU_DOMAIN"
 
 mkdir -p /usr/local/etc/xray
 RU_DOMAIN="$RU_DOMAIN" RU_PORT="$RU_PORT" RU_PASS="$RU_PASS" EU_HOST="$EU_HOST" EU_PORT="$EU_PORT" EU_PASS="$EU_PASS" EU_SNI="$EU_SNI" EU_INSECURE="$EU_INSECURE" python3 - <<'PY'
@@ -186,8 +215,8 @@ cfg = {
           "serverName": ru_domain,
           "certificates": [
             {
-              "certificateFile": f"/etc/letsencrypt/live/{ru_domain}/fullchain.pem",
-              "keyFile": f"/etc/letsencrypt/live/{ru_domain}/privkey.pem"
+              "certificateFile": f"/usr/local/etc/xray/certs/{ru_domain}/fullchain.pem",
+              "keyFile": f"/usr/local/etc/xray/certs/{ru_domain}/privkey.pem"
             }
           ]
         },
