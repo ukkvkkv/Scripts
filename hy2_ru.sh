@@ -103,7 +103,7 @@ for k, v in {
 PY
 }
 
-echo "=== Установка RU entry-сервера на sing-box с выходом через EU ==="
+echo "=== Установка RU entry-сервера на sing-box (self-signed cert) ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
 if ! valid_domain "$RU_DOMAIN"; then
@@ -111,20 +111,14 @@ if ! valid_domain "$RU_DOMAIN"; then
   exit 1
 fi
 
-read -rp "Email для Let's Encrypt (можно оставить пустым): " EMAIL
 read -rp "Вставь ссылку EU-сервера hysteria2://...: " EU_LINK
 
 eval "$(parse_eu_link "$EU_LINK")"
 
 apt update
-apt install -y curl ca-certificates openssl certbot python3 iproute2
+apt install -y curl ca-certificates openssl python3 iproute2
 
 PUBLIC_IP=$(get_public_ip)
-
-if port_in_use 80; then
-  echo "Ошибка: порт 80 занят"
-  exit 1
-fi
 
 RU_PORT=$(random_port)
 RU_PASS=$(random_pass)
@@ -133,14 +127,12 @@ SOCKS_USER="tg_$(openssl rand -hex 4)"
 SOCKS_PASS=$(openssl rand -base64 12 | tr '+/' '-_' | tr -d '=' | cut -c1-16)
 
 if need_cmd ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
-  ufw allow 80/tcp || true
   ufw allow "${RU_PORT}/udp" || true
   ufw allow "${LOCAL_SOCKS_PORT}/tcp" || true
 fi
 
 echo "Устанавливаю sing-box..."
 
-# Надёжная установка sing-box
 SINGBOX_VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep tag_name | cut -d '"' -f 4)
 wget -q https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION#v}-linux-amd64.tar.gz -O /tmp/sing-box.tar.gz
 tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /usr/local/bin
@@ -151,22 +143,23 @@ if [ ! -f /usr/local/bin/sing-box ]; then
   exit 1
 fi
 
-echo "sing-box установлен: $(/usr/local/bin/sing-box version | head -n1)"
+echo "sing-box: $(/usr/local/bin/sing-box version | head -n1)"
 
 systemctl stop sing-box.service 2>/dev/null || true
 
-# Certbot
-CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
-if [[ -n "$EMAIL" ]]; then
-  CERTBOT_ARGS+=(-m "$EMAIL")
-else
-  CERTBOT_ARGS+=(--register-unsafely-without-email)
-fi
-certbot "${CERTBOT_ARGS[@]}"
+# === Self-signed certificate ===
+mkdir -p /etc/sing-box/certs
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 \
+  -keyout /etc/sing-box/certs/privkey.pem \
+  -out /etc/sing-box/certs/fullchain.pem \
+  -days 3650 -nodes -subj "/CN=${RU_DOMAIN}" 2>/dev/null
 
-mkdir -p /etc/sing-box
+chmod 600 /etc/sing-box/certs/privkey.pem
+chmod 644 /etc/sing-box/certs/fullchain.pem
 
-# === sing-box конфиг (убрано udp поле) ===
+echo "Self-signed сертификат создан"
+
+# === sing-box конфиг ===
 cat > /etc/sing-box/config.json <<EOF_SINGBOX
 {
   "log": {
@@ -185,8 +178,8 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
       "tls": {
         "enabled": true,
         "server_name": "${RU_DOMAIN}",
-        "certificate": "/etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem",
-        "key": "/etc/letsencrypt/live/${RU_DOMAIN}/privkey.pem"
+        "certificate": "/etc/sing-box/certs/fullchain.pem",
+        "key": "/etc/sing-box/certs/privkey.pem"
       }
     },
     {
@@ -254,8 +247,6 @@ if ! systemctl is-active --quiet sing-box.service; then
   exit 1
 fi
 
-echo "Проверяю работу..."
-
 if ! wait_tcp_port "$RU_PORT"; then
   echo "Ошибка: порт Hysteria2 не открылся"
   exit 1
@@ -266,12 +257,12 @@ if ! wait_tcp_port "$LOCAL_SOCKS_PORT"; then
   exit 1
 fi
 
-HY2_LINK="hysteria2://${RU_PASS}@${RU_DOMAIN}:${RU_PORT}/?sni=${RU_DOMAIN}&insecure=0#hys2-singbox"
+HY2_LINK="hysteria2://${RU_PASS}@${RU_DOMAIN}:${RU_PORT}/?sni=${RU_DOMAIN}&insecure=1#hys2-singbox-selfsigned"
 TELEGRAM_LINK="tg://proxy?server=${PUBLIC_IP}&port=${LOCAL_SOCKS_PORT}&user=${SOCKS_USER}&pass=${SOCKS_PASS}"
 
 echo
- echo "=== RU-сервер на sing-box готов ==="
- echo "Hysteria2 ссылка:"
+ echo "=== RU-сервер на sing-box готов (self-signed) ==="
+ echo "Hysteria2 ссылка (используй insecure=1):"
  echo "$HY2_LINK"
  echo
  echo "Telegram SOCKS5 прокси:"
