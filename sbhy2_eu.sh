@@ -210,4 +210,3 @@ echo
 echo "=== EU sing-box сервер готов ==="
 echo "Ссылка:"
 echo "$EU_LINK"
-echo
