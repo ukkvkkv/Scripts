@@ -52,6 +52,34 @@ install_xray() {
   bash -c "$(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ install
 }
 
+prepare_xray_cert() {
+  local domain="$1"
+  local cert_dir="/usr/local/etc/xray/certs/${domain}"
+  mkdir -p "$cert_dir"
+  cp -f "/etc/letsencrypt/live/${domain}/fullchain.pem" "$cert_dir/fullchain.pem"
+  cp -f "/etc/letsencrypt/live/${domain}/privkey.pem" "$cert_dir/privkey.pem"
+  chown -R nobody:nogroup "$cert_dir" 2>/dev/null || chown -R nobody:nobody "$cert_dir" 2>/dev/null || true
+  chmod 755 /usr/local/etc/xray /usr/local/etc/xray/certs "$cert_dir"
+  chmod 644 "$cert_dir/fullchain.pem"
+  chmod 600 "$cert_dir/privkey.pem"
+
+  # Чтобы после продления Let's Encrypt Xray тоже получил свежий сертификат.
+  mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+  cat > "/etc/letsencrypt/renewal-hooks/deploy/xray-copy-${domain}.sh" <<HOOK
+#!/usr/bin/env bash
+set -e
+mkdir -p "$cert_dir"
+cp -f "/etc/letsencrypt/live/${domain}/fullchain.pem" "$cert_dir/fullchain.pem"
+cp -f "/etc/letsencrypt/live/${domain}/privkey.pem" "$cert_dir/privkey.pem"
+chown -R nobody:nogroup "$cert_dir" 2>/dev/null || chown -R nobody:nobody "$cert_dir" 2>/dev/null || true
+chmod 755 /usr/local/etc/xray /usr/local/etc/xray/certs "$cert_dir"
+chmod 644 "$cert_dir/fullchain.pem"
+chmod 600 "$cert_dir/privkey.pem"
+systemctl restart xray.service 2>/dev/null || true
+HOOK
+  chmod +x "/etc/letsencrypt/renewal-hooks/deploy/xray-copy-${domain}.sh"
+}
+
 echo "=== Установка EU Hysteria2 exit-сервера на ядре Xray ==="
 read -rp "Введите домен EU-сервера: " DOMAIN
 DOMAIN="${DOMAIN,,}"
@@ -104,6 +132,7 @@ else
   CERTBOT_ARGS+=(--register-unsafely-without-email)
 fi
 certbot "${CERTBOT_ARGS[@]}"
+prepare_xray_cert "$DOMAIN"
 
 mkdir -p /usr/local/etc/xray
 DOMAIN="$DOMAIN" EU_PORT="$EU_PORT" EU_PASS="$EU_PASS" python3 - <<'PY'
@@ -134,8 +163,8 @@ cfg = {
           "serverName": domain,
           "certificates": [
             {
-              "certificateFile": f"/etc/letsencrypt/live/{domain}/fullchain.pem",
-              "keyFile": f"/etc/letsencrypt/live/{domain}/privkey.pem"
+              "certificateFile": f"/usr/local/etc/xray/certs/{domain}/fullchain.pem",
+              "keyFile": f"/usr/local/etc/xray/certs/{domain}/privkey.pem"
             }
           ]
         },
