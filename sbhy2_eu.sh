@@ -132,8 +132,6 @@ EU_PASS=$(random_pass)
 ufw allow 80/tcp 2>/dev/null || true
 open_udp_port "$EU_PORT"
 
-systemctl stop xray 2>/dev/null || true
-systemctl disable xray 2>/dev/null || true
 systemctl stop hysteria-server.service 2>/dev/null || true
 systemctl disable hysteria-server.service 2>/dev/null || true
 systemctl stop hysteria-client-eu.service 2>/dev/null || true
@@ -156,8 +154,8 @@ mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF_CONF
 {
   "log": {
-    "level": "info",
-    "timestamp": true
+    "level": "panic",
+    "timestamp": false
   },
   "inbounds": [
     {
@@ -210,13 +208,6 @@ EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}#hys2-eu
 
 echo
 echo "=== EU sing-box сервер готов ==="
-echo "Ссылка для Shadowrocket и RU-скрипта:"
+echo "Ссылка:"
 echo "$EU_LINK"
 echo
-echo "Сертификаты скопированы в: ${CERT_DIR}"
-echo "В конфиге sing-box указаны пути:"
-echo "  ${CERT_DIR}/fullchain.pem"
-echo "  ${CERT_DIR}/privkey.pem"
-echo
-echo "Проверка сервиса: systemctl status sing-box --no-pager"
-echo "Логи: journalctl -u sing-box -e --no-pager"
