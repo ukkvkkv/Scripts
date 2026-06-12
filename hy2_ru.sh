@@ -151,7 +151,7 @@ if [ ! -f /usr/local/bin/sing-box ]; then
   exit 1
 fi
 
-echo "sing-box: $(/usr/local/bin/sing-box version | head -1)"
+echo "sing-box установлен: $(/usr/local/bin/sing-box version | head -n1)"
 
 systemctl stop sing-box.service 2>/dev/null || true
 
@@ -166,7 +166,7 @@ certbot "${CERTBOT_ARGS[@]}"
 
 mkdir -p /etc/sing-box
 
-# === sing-box конфиг (полностью на sing-box) ===
+# === sing-box конфиг (убрано udp поле) ===
 cat > /etc/sing-box/config.json <<EOF_SINGBOX
 {
   "log": {
@@ -199,8 +199,7 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
           "username": "${SOCKS_USER}",
           "password": "${SOCKS_PASS}"
         }
-      ],
-      "udp": true
+      ]
     }
   ],
   "outbounds": [
@@ -257,13 +256,11 @@ fi
 
 echo "Проверяю работу..."
 
-# Проверка Hysteria2 inbound
 if ! wait_tcp_port "$RU_PORT"; then
   echo "Ошибка: порт Hysteria2 не открылся"
   exit 1
 fi
 
-# Проверка SOCKS5
 if ! wait_tcp_port "$LOCAL_SOCKS_PORT"; then
   echo "Ошибка: SOCKS5 порт не открылся"
   exit 1
