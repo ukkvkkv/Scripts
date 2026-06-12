@@ -103,7 +103,7 @@ for k, v in {
 PY
 }
 
-echo "=== Установка RU Hysteria2 entry-сервера с выходом через EU (sing-box) ==="
+echo "=== Установка RU entry-сервера на sing-box с выходом через EU ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
 if ! valid_domain "$RU_DOMAIN"; then
@@ -120,20 +120,9 @@ apt update
 apt install -y curl ca-certificates openssl certbot python3 iproute2
 
 PUBLIC_IP=$(get_public_ip)
-DNS_IP=$(getent ahostsv4 "$RU_DOMAIN" | awk '{print $1; exit}' || true)
-
-echo
- echo "Текущий публичный IPv4 RU-сервера: ${PUBLIC_IP:-не удалось определить}"
- echo "DNS A-запись домена $RU_DOMAIN: ${DNS_IP:-не найдена}"
-if [[ -n "${PUBLIC_IP:-}" && -n "${DNS_IP:-}" && "$PUBLIC_IP" != "$DNS_IP" ]]; then
-  echo "ВНИМАНИЕ: домен не указывает на текущий IPv4 сервера. Certbot может не выпустить сертификат."
-  read -rp "Продолжить всё равно? [y/N]: " CONTINUE
-  [[ "${CONTINUE,,}" == "y" || "${CONTINUE,,}" == "yes" ]] || exit 1
-fi
 
 if port_in_use 80; then
-  echo "Ошибка: TCP-порт 80 занят. Освободи его для certbot --standalone и запусти скрипт снова."
-  ss -ltnp | grep ':80' || true
+  echo "Ошибка: порт 80 занят"
   exit 1
 fi
 
@@ -149,43 +138,35 @@ if need_cmd ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow "${LOCAL_SOCKS_PORT}/tcp" || true
 fi
 
-echo
- echo "Устанавливаю/обновляю Hysteria2 + sing-box..."
+echo "Устанавливаю sing-box..."
 
-# === Установка Hysteria2 ===
-HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/)
-
-# === Надёжная установка sing-box ===
+# Надёжная установка sing-box
 SINGBOX_VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/releases/latest | grep tag_name | cut -d '"' -f 4)
-
 wget -q https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION#v}-linux-amd64.tar.gz -O /tmp/sing-box.tar.gz
-
 tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /usr/local/bin
 chmod +x /usr/local/bin/sing-box
 
 if [ ! -f /usr/local/bin/sing-box ]; then
-  echo "Ошибка: не удалось установить sing-box"
+  echo "Ошибка установки sing-box"
   exit 1
 fi
 
-echo "sing-box установлен: $(/usr/local/bin/sing-box version | head -n1)"
+echo "sing-box: $(/usr/local/bin/sing-box version | head -1)"
 
-systemctl stop hysteria-server.service 2>/dev/null || true
 systemctl stop sing-box.service 2>/dev/null || true
 
-# === Certbot ===
+# Certbot
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
   CERTBOT_ARGS+=(-m "$EMAIL")
 else
   CERTBOT_ARGS+=(--register-unsafely-without-email)
 fi
-
 certbot "${CERTBOT_ARGS[@]}"
 
-mkdir -p /etc/hysteria /etc/sing-box
+mkdir -p /etc/sing-box
 
-# === sing-box конфиг (исправлено udp поле) ===
+# === sing-box конфиг (полностью на sing-box) ===
 cat > /etc/sing-box/config.json <<EOF_SINGBOX
 {
   "log": {
@@ -193,6 +174,21 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
     "timestamp": true
   },
   "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "::",
+      "listen_port": ${RU_PORT},
+      "users": [
+        { "password": "${RU_PASS}" }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${RU_DOMAIN}",
+        "certificate": "/etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem",
+        "key": "/etc/letsencrypt/live/${RU_DOMAIN}/privkey.pem"
+      }
+    },
     {
       "type": "socks",
       "tag": "socks-in",
@@ -224,7 +220,7 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
   "route": {
     "rules": [
       {
-        "inbound": ["socks-in"],
+        "inbound": ["hy2-in", "socks-in"],
         "outbound": "hy2-eu"
       }
     ]
@@ -232,7 +228,6 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
 }
 EOF_SINGBOX
 
-# === systemd для sing-box ===
 cat > /etc/systemd/system/sing-box.service << 'EOF_SERVICE'
 [Unit]
 Description=sing-box service
@@ -249,94 +244,36 @@ LimitNOFILE=65535
 WantedBy=multi-user.target
 EOF_SERVICE
 
-# === Hysteria2 Server ===
-cat > /etc/hysteria/config.yaml <<EOF_SERVER
-listen: :${RU_PORT}
-
-tls:
-  cert: /etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem
-  key: /etc/letsencrypt/live/${RU_DOMAIN}/privkey.pem
-  sniGuard: strict
-
-auth:
-  type: password
-  password: ${RU_PASS}
-
-bandwidth:
-  up: 0 gbps
-  down: 0 gbps
-
-ignoreClientBandwidth: true
-
-disableUDP: false
-udpIdleTimeout: 60s
-
-outbounds:
-  - name: eu_exit
-    type: socks5
-    socks5:
-      addr: 127.0.0.1:${LOCAL_SOCKS_PORT}
-  - name: ru_direct
-    type: direct
-    direct:
-      mode: auto
-acl:
-  inline:
-    - ru_direct(suffix:ru)
-    - eu_exit(all)
-
-masquerade:
-  type: string
-  string:
-    content: "Hello world! This site is running."
-    headers:
-      content-type: text/plain
-    statusCode: 200
-EOF_SERVER
-
 systemctl daemon-reload
 systemctl enable --now sing-box.service
 systemctl restart sing-box.service
 sleep 3
 
 if ! systemctl is-active --quiet sing-box.service; then
-  echo "Ошибка: sing-box.service не запустился"
+  echo "Ошибка: sing-box не запустился"
   journalctl --no-pager -e -u sing-box.service
   exit 1
 fi
 
-systemctl enable --now hysteria-server.service
-systemctl restart hysteria-server.service
-sleep 2
+echo "Проверяю работу..."
 
-if ! systemctl is-active --quiet hysteria-server.service; then
-  echo "Ошибка: hysteria-server.service не запустился"
-  journalctl --no-pager -e -u hysteria-server.service
+# Проверка Hysteria2 inbound
+if ! wait_tcp_port "$RU_PORT"; then
+  echo "Ошибка: порт Hysteria2 не открылся"
   exit 1
 fi
 
-echo
- echo "Проверяю соединение через sing-box..."
+# Проверка SOCKS5
 if ! wait_tcp_port "$LOCAL_SOCKS_PORT"; then
-  echo "Ошибка: порт sing-box не открылся"
+  echo "Ошибка: SOCKS5 порт не открылся"
   exit 1
 fi
 
-EU_EXIT_IP=$(curl --socks5-hostname "127.0.0.1:${LOCAL_SOCKS_PORT}" -4fsSL --max-time 15 https://api.ipify.org || true)
-if [[ -z "$EU_EXIT_IP" ]]; then
-  echo "Ошибка: не удалось выйти через EU"
-  exit 1
-fi
- echo "OK: sing-box + Hysteria2 работает"
-
-PASS_ENC=$(urlencode "$RU_PASS")
-DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
-HY2_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}/?sni=${DOMAIN_ENC}&insecure=0#hys2-multihop"
-
+HY2_LINK="hysteria2://${RU_PASS}@${RU_DOMAIN}:${RU_PORT}/?sni=${RU_DOMAIN}&insecure=0#hys2-singbox"
 TELEGRAM_LINK="tg://proxy?server=${PUBLIC_IP}&port=${LOCAL_SOCKS_PORT}&user=${SOCKS_USER}&pass=${SOCKS_PASS}"
 
 echo
- echo "=== RU-сервер готов ==="
+ echo "=== RU-сервер на sing-box готов ==="
  echo "Hysteria2 ссылка:"
  echo "$HY2_LINK"
  echo
