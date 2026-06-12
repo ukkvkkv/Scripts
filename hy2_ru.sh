@@ -160,7 +160,7 @@ SINGBOX_VERSION=$(curl -s https://api.github.com/repos/SagerNet/sing-box/release
 
 wget -q https://github.com/SagerNet/sing-box/releases/download/${SINGBOX_VERSION}/sing-box-${SINGBOX_VERSION#v}-linux-amd64.tar.gz -O /tmp/sing-box.tar.gz
 
-tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /usr/local/bin sing-box
+tar -xzf /tmp/sing-box.tar.gz --strip-components=1 -C /usr/local/bin
 chmod +x /usr/local/bin/sing-box
 
 if [ ! -f /usr/local/bin/sing-box ]; then
