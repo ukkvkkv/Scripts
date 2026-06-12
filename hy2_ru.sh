@@ -185,7 +185,7 @@ certbot "${CERTBOT_ARGS[@]}"
 
 mkdir -p /etc/hysteria /etc/sing-box
 
-# === sing-box конфиг ===
+# === sing-box конфиг (исправлено udp поле) ===
 cat > /etc/sing-box/config.json <<EOF_SINGBOX
 {
   "log": {
@@ -204,7 +204,7 @@ cat > /etc/sing-box/config.json <<EOF_SINGBOX
           "password": "${SOCKS_PASS}"
         }
       ],
-      "udp_disable": false
+      "udp": true
     }
   ],
   "outbounds": [
