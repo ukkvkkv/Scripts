@@ -103,7 +103,7 @@ for k, v in {
 PY
 }
 
-echo "=== Установка RU Hysteria2 entry-сервера с выходом через EU ==="
+echo "=== Установка RU Hysteria2 entry-сервера с выходом через EU (sing-box) ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
 if ! valid_domain "$RU_DOMAIN"; then
@@ -140,18 +140,24 @@ fi
 RU_PORT=$(random_port)
 RU_PASS=$(random_pass)
 LOCAL_SOCKS_PORT=$(random_port)
+SOCKS_USER="tg_$(openssl rand -hex 4)"
+SOCKS_PASS=$(openssl rand -base64 12 | tr '+/' '-_' | tr -d '=' | cut -c1-16)
 
 if need_cmd ufw && ufw status 2>/dev/null | grep -q "Status: active"; then
   ufw allow 80/tcp || true
   ufw allow "${RU_PORT}/udp" || true
+  ufw allow "${LOCAL_SOCKS_PORT}/tcp" || true
 fi
 
 echo
- echo "Устанавливаю/обновляю Hysteria2..."
+ echo "Устанавливаю/обновляю Hysteria2 + sing-box..."
 HYSTERIA_USER=root bash <(curl -fsSL https://get.hy2.sh/)
 
+# Установка sing-box
+bash <(curl -fsSL https://sing-box.sagernet.org/install.sh) || true
+
 systemctl stop hysteria-server.service 2>/dev/null || true
-systemctl stop hysteria-client-eu.service 2>/dev/null || true
+systemctl stop sing-box.service 2>/dev/null || true
 
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
@@ -162,43 +168,85 @@ fi
 
 certbot "${CERTBOT_ARGS[@]}"
 
-mkdir -p /etc/hysteria /etc/hysteria-client-eu
-cat > /etc/hysteria-client-eu/config.yaml <<EOF_CLIENT
-server: ${EU_HOST}:${EU_PORT}
+mkdir -p /etc/hysteria /etc/sing-box
 
-auth: ${EU_PASS}
+# sing-box конфиг (подключается к EU + отдаёт публичный SOCKS5 для Telegram)
+cat > /etc/sing-box/config.json <<EOF_SINGBOX
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "0.0.0.0",
+      "listen_port": ${LOCAL_SOCKS_PORT},
+      "users": [
+        {
+          "username": "${SOCKS_USER}",
+          "password": "${SOCKS_PASS}"
+        }
+      ],
+      "udp_disable": false
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-eu",
+      "server": "${EU_HOST}",
+      "server_port": ${EU_PORT},
+      "password": "${EU_PASS}",
+      "tls": {
+        "enabled": true,
+        "server_name": "${EU_SNI}",
+        "insecure": ${EU_INSECURE}
+      },
+      "bandwidth": {
+        "up": "0 gbps",
+        "down": "0 gbps"
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "inbound": ["socks-in"],
+        "outbound": "hy2-eu"
+      }
+    ]
+  }
+}
+EOF_SINGBOX
 
-tls:
-  sni: ${EU_SNI}
-  insecure: ${EU_INSECURE}
-
-bandwidth:
-  up: 0 gbps
-  down: 0 gbps
-
-socks5:
-  listen: 127.0.0.1:${LOCAL_SOCKS_PORT}
-  disableUDP: false
-EOF_CLIENT
-
-HYSTERIA_BIN=$(command -v hysteria || echo /usr/local/bin/hysteria)
-cat > /etc/systemd/system/hysteria-client-eu.service <<EOF_SERVICE
+cat > /etc/systemd/system/sing-box.service << 'EOF_SERVICE'
 [Unit]
-Description=Hysteria2 client to EU exit
-After=network-online.target
-Wants=network-online.target
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org
+After=network.target nss-lookup.target
 
 [Service]
-Type=simple
-ExecStart=${HYSTERIA_BIN} client -c /etc/hysteria-client-eu/config.yaml
-Restart=always
-RestartSec=3
+User=root
+WorkingDirectory=/etc/sing-box
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecReload=/usr/local/bin/sing-box reload
+Restart=on-failure
+RestartSec=5
 LimitNOFILE=infinity
 
 [Install]
 WantedBy=multi-user.target
 EOF_SERVICE
 
+# Hysteria2 Server конфиг (маршрутизация .ru direct, остальное через sing-box)
 cat > /etc/hysteria/config.yaml <<EOF_SERVER
 listen: :${RU_PORT}
 
@@ -244,13 +292,13 @@ masquerade:
 EOF_SERVER
 
 systemctl daemon-reload
-systemctl enable --now hysteria-client-eu.service
-systemctl restart hysteria-client-eu.service
-sleep 2
+systemctl enable --now sing-box.service
+systemctl restart sing-box.service
+sleep 3
 
-if ! systemctl is-active --quiet hysteria-client-eu.service; then
-  echo "Ошибка: hysteria-client-eu.service не запустился. Логи:"
-  journalctl --no-pager -e -u hysteria-client-eu.service
+if ! systemctl is-active --quiet sing-box.service; then
+  echo "Ошибка: sing-box.service не запустился. Логи:"
+  journalctl --no-pager -e -u sing-box.service
   exit 1
 fi
 
@@ -265,25 +313,31 @@ if ! systemctl is-active --quiet hysteria-server.service; then
 fi
 
 echo
- echo "Проверяю локальный SOCKS5 до EU: 127.0.0.1:${LOCAL_SOCKS_PORT}"
+ echo "Проверяю sing-box (локальный SOCKS5 до EU): 127.0.0.1:${LOCAL_SOCKS_PORT}"
 if ! wait_tcp_port "$LOCAL_SOCKS_PORT"; then
-  echo "Ошибка: локальный SOCKS5 порт не открылся. Логи EU-клиента:"
-  journalctl --no-pager -e -u hysteria-client-eu.service
+  echo "Ошибка: sing-box порт не открылся. Логи:"
+  journalctl --no-pager -e -u sing-box.service
   exit 1
 fi
 
 EU_EXIT_IP=$(curl --socks5-hostname "127.0.0.1:${LOCAL_SOCKS_PORT}" -4fsSL --max-time 20 https://api.ipify.org || true)
 if [[ -z "$EU_EXIT_IP" ]]; then
-  echo "Ошибка: через локальный SOCKS5 до EU не удалось выйти в интернет."
-  journalctl --no-pager -e -u hysteria-client-eu.service
+  echo "Ошибка: через sing-box до EU не удалось выйти в интернет."
+  journalctl --no-pager -e -u sing-box.service
   exit 1
 fi
- echo "OK: локальный SOCKS5 до EU работает."
+ echo "OK: sing-box + Hysteria2 работает."
 
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
-LINK_DOMAIN="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}/?sni=${DOMAIN_ENC}&insecure=0#hys2-multihop"
+HY2_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}/?sni=${DOMAIN_ENC}&insecure=0#hys2-multihop"
+
+TELEGRAM_LINK="tg://proxy?server=${PUBLIC_IP}&port=${LOCAL_SOCKS_PORT}&user=${SOCKS_USER}&pass=${SOCKS_PASS}"
 
 echo
  echo "=== RU-сервер готов ==="
- echo "$LINK_DOMAIN"
+ echo "Hysteria2 ссылка:"
+ echo "$HY2_LINK"
+ echo
+ echo "Telegram SOCKS5 прокси:"
+ echo "$TELEGRAM_LINK"
