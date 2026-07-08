@@ -81,7 +81,7 @@ cat > /etc/sing-box/config.json <<EOF
       "username": "${EU_USER}",
       "password": "${EU_PASS}",
       "multiplexing": {
-        "level": "MULTIPLEXING_HIGH"
+        "level": "MULTIPLEXING_LOW"
       }
     }
   ],
