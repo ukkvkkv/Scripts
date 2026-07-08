@@ -25,6 +25,18 @@ random_pass() {
   openssl rand -base64 24 | tr '+/' '-_' | tr -d '=' | cut -c1-28
 }
 
+get_public_ip() {
+  local ip
+  for url in "https://api.ipify.org" "https://ifconfig.me" "https://icanhazip.com"; do
+    ip=$(curl -4fsSL --max-time 6 "$url" 2>/dev/null || true)
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$ip"
+      return 0
+    fi
+  done
+  hostname -I | awk '{print $1}'
+}
+
 install_singbox() {
   if ! need_cmd sing-box; then
     echo "Устанавливаю sing-box..."
@@ -78,11 +90,9 @@ if ! systemctl is-active --quiet sing-box; then
   exit 1
 fi
 
+PUBLIC_IP=$(get_public_ip)
+
 echo
 echo "=== EU Mieru готов ==="
-echo "Порт: ${EU_PORT}"
-echo "User: ${EU_USER}"
-echo "Pass: ${EU_PASS}"
 echo
-echo "Ссылка для RU-скрипта:"
-echo "mierus://${EU_USER}:${EU_PASS}@IP_ИЛИ_ДОМЕН_ЕВРОПЫ:${EU_PORT}?transport=tcp"
+echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見える"
