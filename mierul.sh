@@ -54,7 +54,7 @@ sudo ufw --force enable >/dev/null 2>&1 || true
 
 SERVER_IP=$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || curl -s4 --max-time 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print $1}' || echo "YOUR_VPS_IP")
 
-MIERU_LINK="mierus://${USERNAME}:${PASSWORD}@${SERVER_IP}?transport=tcp&port=443&profile=mieru"
+MIERU_LINK="mierus://${USERNAME}:${PASSWORD}@${SERVER_IP}?transport=tcp&port=443&profile=見える"
 
 echo ""
 echo -e "${GREEN}Готово${NC}"
