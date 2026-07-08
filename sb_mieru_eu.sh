@@ -24,7 +24,8 @@ install_mbox() {
     echo "Устанавливаю mbox..."
     LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     ARCH=$(dpkg --print-architecture); [[ "$ARCH" == "amd64" ]] && ASSET="linux-amd64" || ASSET="linux-arm64"
-    URL=$(curl -s "https://api.github.com/repos/enfein/mbox/releases/latest" | jq -r ".assets[] | select(.name | contains(\"$ASSET\") and endswith(\".tar.gz\")) | .browser_download_url" | head -n1)
+    URL=$(curl -s "https://api.github.com/repos/enfein/mbox/releases/latest" | \
+        jq -r ".assets[] | select(.name | contains(\"$ASSET\") and endswith(\".tar.gz\")) | .browser_download_url" | head -n1)
     curl -L "$URL" -o /tmp/mbox.tar.gz
     mkdir -p /tmp/mbox_extract
     tar -xzf /tmp/mbox.tar.gz -C /tmp/mbox_extract
@@ -36,13 +37,38 @@ install_mbox() {
     echo "mbox установлен: $(sing-box version)"
 }
 
+create_systemd_service() {
+    mkdir -p /var/lib/sing-box
+    cat > /etc/systemd/system/sing-box.service <<'EOF'
+[Unit]
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+WorkingDirectory=/var/lib/sing-box
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
 echo "=== Mieru EU Exit (mbox) ==="
+
 EU_PORT=$(random_port)
 EU_USER="u$(openssl rand -hex 5)"
 EU_PASS=$(random_pass)
 
 install_mbox
-systemctl stop sing-box 2>/dev/null || true
+create_systemd_service
 
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF
@@ -66,12 +92,19 @@ systemctl enable --now sing-box
 systemctl restart sing-box
 sleep 2
 
-[[ "$(systemctl is-active sing-box)" != "active" ]] && { journalctl --no-pager -e -u sing-box; exit 1; }
+if ! systemctl is-active --quiet sing-box; then
+  echo "sing-box не запустился. Логи:"
+  journalctl --no-pager -e -u sing-box
+  exit 1
+fi
 
 PUBLIC_IP=$(get_public_ip)
+
 echo
 echo "=== EU Mieru готов ==="
-echo "Порт: ${EU_PORT} | User: ${EU_USER} | Pass: ${EU_PASS}"
+echo "Порт: ${EU_PORT}"
+echo "User: ${EU_USER}"
+echo "Pass: ${EU_PASS}"
 echo
 echo "Ссылка:"
 echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見た"
