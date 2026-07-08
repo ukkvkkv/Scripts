@@ -44,13 +44,14 @@ install_singbox() {
   fi
 }
 
-echo "=== Mieru RU Multihop ==="
+echo "=== Mieru RU Multihop (sing-box) ==="
 read -rp "Вставь ссылку EU (mierus://...): " EU_LINK
 
-EU_HOST=$(echo "$EU_LINK" | sed -E 's|mierus://[^@]+@([^:]+):.*|\1|')
-EU_PORT=$(echo "$EU_LINK" | sed -E 's|.*:([0-9]+)\?.*|\1|')
-EU_USER=$(echo "$EU_LINK" | sed -E 's|mierus://([^:]+):.*|\1|')
+# Новый парсер под формат ?udp=0&transport=tcp&port=PORT&profile=見える
+EU_HOST=$(echo "$EU_LINK" | sed -E 's|mierus://[^@]+@([^?]+)\?.*|\1|')
+EU_USER=$(echo "$EU_LINK" | sed -E 's|mierus://([^:]+):.*@.*|\1|')
 EU_PASS=$(echo "$EU_LINK" | sed -E 's|mierus://[^:]+:([^@]+)@.*|\1|')
+EU_PORT=$(echo "$EU_LINK" | grep -oE 'port=[0-9]+' | cut -d= -f2)
 
 if [[ -z "$EU_HOST" || -z "$EU_PORT" || -z "$EU_USER" || -z "$EU_PASS" ]]; then
   echo "Не удалось распарсить ссылку EU"
@@ -114,7 +115,7 @@ fi
 
 PUBLIC_IP=$(get_public_ip)
 
-echo
+echo ""
 echo "=== RU Mieru Multihop готов ==="
-echo
+echo ""
 echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=見える"
