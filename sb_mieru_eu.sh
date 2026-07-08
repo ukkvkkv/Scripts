@@ -6,7 +6,6 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
 port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; }
 
 random_port() {
@@ -38,15 +37,35 @@ get_public_ip() {
 }
 
 install_mbox() {
-  if ! need_cmd sing-box; then
-    echo "Устанавливаю mbox..."
-    apt update
-    apt install -y git golang-go
-    rm -rf /tmp/mbox
-    git clone https://github.com/enfein/mbox.git /tmp/mbox
-    cd /tmp/mbox
-    go build -o /usr/local/bin/sing-box .
+  echo "Устанавливаю mbox из релиза..."
+  LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+  
+  if [[ -z "$LATEST_TAG" ]]; then
+    echo "Не удалось получить информацию о релизе"
+    exit 1
   fi
+
+  ARCH=$(dpkg --print-architecture)
+  if [[ "$ARCH" == "amd64" ]]; then
+    ASSET_NAME="sing-box.*linux-amd64"
+  else
+    ASSET_NAME="sing-box.*linux-arm64"
+  fi
+
+  DOWNLOAD_URL=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | \
+    grep browser_download_url | grep -E "$ASSET_NAME" | head -n1 | cut -d '"' -f4)
+
+  if [[ -z "$DOWNLOAD_URL" ]]; then
+    echo "Не удалось найти подходящий бинарник в релизе"
+    exit 1
+  fi
+
+  curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
+  tar -xzf /tmp/mbox.tar.gz -C /usr/local/bin sing-box
+  chmod +x /usr/local/bin/sing-box
+  rm -f /tmp/mbox.tar.gz
+
+  echo "mbox установлен: $(sing-box version)"
 }
 
 echo "=== Mieru EU Exit (mbox) ==="
