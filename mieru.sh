@@ -67,10 +67,6 @@ systemctl enable mita
 PUBLIC_IP=$(get_public_ip)
 
 echo
-echo "=== EU Mieru готов ==="
-echo "Порт: ${EU_PORT}"
-echo "User: ${EU_USER}"
-echo "Pass: ${EU_PASS}"
+echo "=== Mieru готов ==="
 echo
-echo "Ссылка:"
 echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見た"
