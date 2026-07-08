@@ -6,6 +6,7 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+need_cmd() { command -v "$1" >/dev/null 2>&1; }
 port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; }
 
 random_port() {
@@ -37,33 +38,74 @@ get_public_ip() {
 }
 
 install_mbox() {
-  echo "Устанавливаю mbox из релиза..."
-  LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-  
-  ARCH=$(dpkg --print-architecture)
-  if [[ "$ARCH" == "amd64" ]]; then
-    ASSET_NAME="sing-box.*linux-amd64"
-  else
-    ASSET_NAME="sing-box.*linux-arm64"
-  fi
+    echo "Устанавливаю mbox из релиза..."
 
-  DOWNLOAD_URL=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | \
-    grep browser_download_url | grep -E "$ASSET_NAME" | head -n1 | cut -d '"' -f4)
+    LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+    
+    if [[ -z "$LATEST_TAG" ]]; then
+        echo "Не удалось получить информацию о релизе"
+        exit 1
+    fi
 
-  if [[ -z "$DOWNLOAD_URL" ]]; then
-    echo "Не удалось найти бинарник в релизе"
-    exit 1
-  fi
+    ARCH=$(dpkg --print-architecture)
+    [[ "$ARCH" == "amd64" ]] && ASSET_NAME="linux-amd64" || ASSET_NAME="linux-arm64"
 
-  curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
-  tar -xzf /tmp/mbox.tar.gz -C /usr/local/bin sing-box
-  chmod +x /usr/local/bin/sing-box
-  rm -f /tmp/mbox.tar.gz
+    DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/enfein/mbox/releases/latest" | \
+        jq -r ".assets[] | select(.name | contains(\"${ASSET_NAME}\") and endswith(\".tar.gz\")) | .browser_download_url" | head -n1)
+
+    if [[ -z "$DOWNLOAD_URL" ]]; then
+        echo "Не удалось найти архив в релизе"
+        exit 1
+    fi
+
+    echo "Скачиваю: $DOWNLOAD_URL"
+    curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
+
+    mkdir -p /tmp/mbox_extract
+    tar -xzf /tmp/mbox.tar.gz -C /tmp/mbox_extract
+
+    BINARY_PATH=$(find /tmp/mbox_extract -type f -name "sing-box" | head -n1)
+
+    if [[ -z "$BINARY_PATH" ]]; then
+        echo "Бинарник sing-box не найден в архиве"
+        exit 1
+    fi
+
+    cp "$BINARY_PATH" /usr/local/bin/sing-box
+    chmod +x /usr/local/bin/sing-box
+    rm -rf /tmp/mbox.tar.gz /tmp/mbox_extract
+
+    echo "mbox установлен: $(sing-box version)"
+}
+
+create_systemd_service() {
+    mkdir -p /var/lib/sing-box
+    cat > /etc/systemd/system/sing-box.service <<'EOF'
+[Unit]
+Description=sing-box service
+Documentation=https://sing-box.sagernet.org
+After=network.target nss-lookup.target
+
+[Service]
+User=root
+WorkingDirectory=/var/lib/sing-box
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_SYS_PTRACE CAP_DAC_READ_SEARCH
+ExecStart=/usr/local/bin/sing-box run -c /etc/sing-box/config.json
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=infinity
+
+[Install]
+WantedBy=multi-user.target
+EOF
 }
 
 echo "=== Mieru RU Multihop (mbox) ==="
 read -rp "Вставь ссылку EU (mierus://...): " EU_LINK
 
+# Парсинг ссылки
 EU_HOST=$(echo "$EU_LINK" | sed -E 's|mierus://[^@]+@([^?]+)\?.*|\1|')
 EU_USER=$(echo "$EU_LINK" | sed -E 's|mierus://([^:]+):.*@.*|\1|')
 EU_PASS=$(echo "$EU_LINK" | sed -E 's|mierus://[^:]+:([^@]+)@.*|\1|')
@@ -79,7 +121,7 @@ RU_USER="u$(openssl rand -hex 5)"
 RU_PASS=$(random_pass)
 
 install_mbox
-systemctl stop sing-box 2>/dev/null || true
+create_systemd_service
 
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF
