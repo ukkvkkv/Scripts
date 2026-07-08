@@ -38,7 +38,6 @@ get_public_ip() {
 }
 
 install_mbox() {
-    echo "Устанавливаю mbox из релиза..."
 
     LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
     
@@ -58,7 +57,6 @@ install_mbox() {
         exit 1
     fi
 
-    echo "Скачиваю: $DOWNLOAD_URL"
     curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
 
     mkdir -p /tmp/mbox_extract
@@ -75,7 +73,6 @@ install_mbox() {
     chmod +x /usr/local/bin/sing-box
     rm -rf /tmp/mbox.tar.gz /tmp/mbox_extract
 
-    echo "mbox установлен: $(sing-box version)"
 }
 
 create_systemd_service() {
@@ -174,10 +171,6 @@ fi
 PUBLIC_IP=$(get_public_ip)
 
 echo
-echo "=== RU Mieru Multihop готов ==="
-echo "Порт: ${RU_PORT}"
-echo "User: ${RU_USER}"
-echo "Pass: ${RU_PASS}"
+echo "=== Mieru Multihop готов ==="
 echo
-echo "Ссылка для клиента:"
-echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=二段見える"
+echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=見える"
