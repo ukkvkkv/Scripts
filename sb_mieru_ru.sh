@@ -37,17 +37,26 @@ get_public_ip() {
   hostname -I | awk '{print $1}'
 }
 
-install_singbox() {
+install_mbox() {
   if ! need_cmd sing-box; then
-    echo "Устанавливаю sing-box..."
-    bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+    echo "Устанавливаю mbox (форк sing-box с поддержкой Mieru)..."
+    apt update
+    apt install -y git golang-go make
+
+    rm -rf /tmp/mbox
+    git clone https://github.com/enfein/mbox.git /tmp/mbox
+    cd /tmp/mbox
+    go build -o /usr/local/bin/sing-box .
+
+    echo "mbox успешно собран и установлен"
+  else
+    echo "sing-box уже установлен: $(sing-box version 2>/dev/null | head -n 1 || echo 'unknown')"
   fi
 }
 
-echo "=== Mieru RU Multihop (sing-box) ==="
+echo "=== Mieru RU Multihop (mbox) ==="
 read -rp "Вставь ссылку EU (mierus://...): " EU_LINK
 
-# Новый парсер под формат ?udp=0&transport=tcp&port=PORT&profile=見える
 EU_HOST=$(echo "$EU_LINK" | sed -E 's|mierus://[^@]+@([^?]+)\?.*|\1|')
 EU_USER=$(echo "$EU_LINK" | sed -E 's|mierus://([^:]+):.*@.*|\1|')
 EU_PASS=$(echo "$EU_LINK" | sed -E 's|mierus://[^:]+:([^@]+)@.*|\1|')
@@ -62,7 +71,7 @@ RU_PORT=$(random_port)
 RU_USER="u$(openssl rand -hex 5)"
 RU_PASS=$(random_pass)
 
-install_singbox
+install_mbox
 systemctl stop sing-box 2>/dev/null || true
 
 mkdir -p /etc/sing-box
@@ -115,7 +124,11 @@ fi
 
 PUBLIC_IP=$(get_public_ip)
 
-echo ""
-echo "=== RU Mieru Multihop готов ==="
-echo ""
+echo
+echo "=== RU Mieru Multihop (mbox) готов ==="
+echo "Порт: ${RU_PORT}"
+echo "User: ${RU_USER}"
+echo "Pass: ${RU_PASS}"
+echo
+echo "Ссылка для клиента:"
 echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=見える"
