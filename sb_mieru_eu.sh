@@ -37,20 +37,25 @@ get_public_ip() {
   hostname -I | awk '{print $1}'
 }
 
-install_singbox() {
+install_mbox() {
   if ! need_cmd sing-box; then
-    echo "Устанавливаю sing-box..."
-    bash <(curl -fsSL https://sing-box.app/deb-install.sh)
+    echo "Устанавливаю mbox..."
+    apt update
+    apt install -y git golang-go
+    rm -rf /tmp/mbox
+    git clone https://github.com/enfein/mbox.git /tmp/mbox
+    cd /tmp/mbox
+    go build -o /usr/local/bin/sing-box .
   fi
 }
 
-echo "=== Mieru EU Exit (sing-box) ==="
+echo "=== Mieru EU Exit (mbox) ==="
 
 EU_PORT=$(random_port)
 EU_USER="u$(openssl rand -hex 5)"
 EU_PASS=$(random_pass)
 
-install_singbox
+install_mbox
 systemctl stop sing-box 2>/dev/null || true
 
 mkdir -p /etc/sing-box
@@ -94,5 +99,9 @@ PUBLIC_IP=$(get_public_ip)
 
 echo
 echo "=== EU Mieru готов ==="
+echo "Порт: ${EU_PORT}"
+echo "User: ${EU_USER}"
+echo "Pass: ${EU_PASS}"
 echo
-echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見える"
+echo "Ссылка:"
+echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見た"
