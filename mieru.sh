@@ -1,6 +1,5 @@
 #!/bin/bash
 # Mieru (mita) one-click installer
-
 set -euo pipefail
 
 GREEN='\033[0;32m'
@@ -10,7 +9,7 @@ NC='\033[0m'
 echo -e "${YELLOW}Установка Mieru...${NC}"
 
 sudo apt-get update -qq >/dev/null 2>&1
-sudo apt-get install -y -qq curl wget openssl ufw chrony iproute2 >/dev/null 2>&1
+sudo apt-get install -y -qq curl wget openssl chrony iproute2 >/dev/null 2>&1
 sudo systemctl enable --now chrony >/dev/null 2>&1 || true
 
 LATEST_VERSION=$(curl -s --max-time 8 https://api.github.com/repos/enfein/mieru/releases/latest | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/' || echo "3.34.0")
@@ -49,8 +48,6 @@ sg mita -c "
 " 2>/dev/null || true
 
 sudo systemctl enable mita >/dev/null 2>&1 || true
-sudo ufw allow 443/tcp >/dev/null 2>&1 || true
-sudo ufw --force enable >/dev/null 2>&1 || true
 
 SERVER_IP=$(curl -s4 --max-time 5 ifconfig.me 2>/dev/null || curl -s4 --max-time 5 ipinfo.io/ip 2>/dev/null || hostname -I | awk '{print $1}' || echo "YOUR_VPS_IP")
 
