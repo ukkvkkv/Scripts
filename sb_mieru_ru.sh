@@ -6,7 +6,6 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-need_cmd() { command -v "$1" >/dev/null 2>&1; }
 port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; }
 
 random_port() {
@@ -38,20 +37,28 @@ get_public_ip() {
 }
 
 install_mbox() {
-  if ! need_cmd sing-box; then
-    echo "Устанавливаю mbox (форк sing-box с поддержкой Mieru)..."
-    apt update
-    apt install -y git golang-go make
-
-    rm -rf /tmp/mbox
-    git clone https://github.com/enfein/mbox.git /tmp/mbox
-    cd /tmp/mbox
-    go build -o /usr/local/bin/sing-box .
-
-    echo "mbox успешно собран и установлен"
+  echo "Устанавливаю mbox из релиза..."
+  LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
+  
+  ARCH=$(dpkg --print-architecture)
+  if [[ "$ARCH" == "amd64" ]]; then
+    ASSET_NAME="sing-box.*linux-amd64"
   else
-    echo "sing-box уже установлен: $(sing-box version 2>/dev/null | head -n 1 || echo 'unknown')"
+    ASSET_NAME="sing-box.*linux-arm64"
   fi
+
+  DOWNLOAD_URL=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | \
+    grep browser_download_url | grep -E "$ASSET_NAME" | head -n1 | cut -d '"' -f4)
+
+  if [[ -z "$DOWNLOAD_URL" ]]; then
+    echo "Не удалось найти бинарник в релизе"
+    exit 1
+  fi
+
+  curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
+  tar -xzf /tmp/mbox.tar.gz -C /usr/local/bin sing-box
+  chmod +x /usr/local/bin/sing-box
+  rm -f /tmp/mbox.tar.gz
 }
 
 echo "=== Mieru RU Multihop (mbox) ==="
@@ -125,10 +132,10 @@ fi
 PUBLIC_IP=$(get_public_ip)
 
 echo
-echo "=== RU Mieru Multihop (mbox) готов ==="
+echo "=== RU Mieru Multihop готов ==="
 echo "Порт: ${RU_PORT}"
 echo "User: ${RU_USER}"
 echo "Pass: ${RU_PASS}"
 echo
 echo "Ссылка для клиента:"
-echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=見える"
+echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=二段見える"
