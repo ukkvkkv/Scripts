@@ -25,6 +25,18 @@ random_pass() {
   openssl rand -base64 24 | tr '+/' '-_' | tr -d '=' | cut -c1-28
 }
 
+get_public_ip() {
+  local ip
+  for url in "https://api.ipify.org" "https://ifconfig.me" "https://icanhazip.com"; do
+    ip=$(curl -4fsSL --max-time 6 "$url" 2>/dev/null || true)
+    if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      echo "$ip"
+      return 0
+    fi
+  done
+  hostname -I | awk '{print $1}'
+}
+
 install_singbox() {
   if ! need_cmd sing-box; then
     echo "Устанавливаю sing-box..."
@@ -32,7 +44,7 @@ install_singbox() {
   fi
 }
 
-echo "=== Mieru RU Multihop (sing-box) ==="
+echo "=== Mieru RU Multihop ==="
 read -rp "Вставь ссылку EU (mierus://...): " EU_LINK
 
 EU_HOST=$(echo "$EU_LINK" | sed -E 's|mierus://[^@]+@([^:]+):.*|\1|')
@@ -79,10 +91,7 @@ cat > /etc/sing-box/config.json <<EOF
       "server_port": ${EU_PORT},
       "transport": "TCP",
       "username": "${EU_USER}",
-      "password": "${EU_PASS}",
-      "multiplexing": {
-        "level": "MULTIPLEXING_LOW"
-      }
+      "password": "${EU_PASS}"
     }
   ],
   "route": {
@@ -103,11 +112,9 @@ if ! systemctl is-active --quiet sing-box; then
   exit 1
 fi
 
+PUBLIC_IP=$(get_public_ip)
+
 echo
 echo "=== RU Mieru Multihop готов ==="
-echo "Порт: ${RU_PORT}"
-echo "User: ${RU_USER}"
-echo "Pass: ${RU_PASS}"
 echo
-echo "Ссылка для клиента:"
-echo "mierus://${RU_USER}:${RU_PASS}@IP_РУССКОГО_СЕРВЕРА:${RU_PORT}?transport=tcp"
+echo "mierus://${RU_USER}:${RU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${RU_PORT}&profile=見える"
