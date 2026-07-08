@@ -38,6 +38,7 @@ get_public_ip() {
 
 install_mbox() {
   echo "Устанавливаю mbox из релиза..."
+
   LATEST_TAG=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
   
   if [[ -z "$LATEST_TAG" ]]; then
@@ -47,25 +48,40 @@ install_mbox() {
 
   ARCH=$(dpkg --print-architecture)
   if [[ "$ARCH" == "amd64" ]]; then
-    ASSET_NAME="sing-box.*linux-amd64"
+    ASSET_PATTERN="linux-amd64"
   else
-    ASSET_NAME="sing-box.*linux-arm64"
+    ASSET_PATTERN="linux-arm64"
   fi
 
-  DOWNLOAD_URL=$(curl -s https://api.github.com/repos/enfein/mbox/releases/latest | \
-    grep browser_download_url | grep -E "$ASSET_NAME" | head -n1 | cut -d '"' -f4)
+  # Находим нужный архив
+  DOWNLOAD_URL=$(curl -s "https://api.github.com/repos/enfein/mbox/releases/latest" | \
+    jq -r ".assets[] | select(.name | contains(\"${ASSET_PATTERN}\") and contains(\".tar.gz\")) | .browser_download_url" | head -n1)
 
   if [[ -z "$DOWNLOAD_URL" ]]; then
-    echo "Не удалось найти подходящий бинарник в релизе"
+    echo "Не удалось найти подходящий архив в релизе"
     exit 1
   fi
 
+  echo "Скачиваю: $DOWNLOAD_URL"
   curl -L "$DOWNLOAD_URL" -o /tmp/mbox.tar.gz
-  tar -xzf /tmp/mbox.tar.gz -C /usr/local/bin sing-box
-  chmod +x /usr/local/bin/sing-box
-  rm -f /tmp/mbox.tar.gz
 
-  echo "mbox установлен: $(sing-box version)"
+  # Распаковываем во временную папку
+  mkdir -p /tmp/mbox_extracted
+  tar -xzf /tmp/mbox.tar.gz -C /tmp/mbox_extracted
+
+  # Ищем бинарник sing-box внутри распакованного архива
+  BINARY_PATH=$(find /tmp/mbox_extracted -type f -name "sing-box" | head -n1)
+
+  if [[ -z "$BINARY_PATH" ]]; then
+    echo "Не удалось найти бинарник sing-box внутри архива"
+    exit 1
+  fi
+
+  cp "$BINARY_PATH" /usr/local/bin/sing-box
+  chmod +x /usr/local/bin/sing-box
+  rm -rf /tmp/mbox.tar.gz /tmp/mbox_extracted
+
+  echo "mbox успешно установлен: $(sing-box version)"
 }
 
 echo "=== Mieru EU Exit (mbox) ==="
