@@ -6,7 +6,9 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-# Отключаем IPv6
+echo "=== Подготовка системы ==="
+
+# Отключаем IPv6 + BBR
 cat > /etc/sysctl.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -14,18 +16,23 @@ net.ipv6.conf.lo.disable_ipv6 = 1
 net.core.default_qdisc=fq
 net.ipv4.tcp_congestion_control=bbr
 EOF
-
 sysctl -p
 
-# Устанавливаем cron
+# Устанавливаем и настраиваем cron + ежедневную перезагрузку
+echo "Настройка cron и ежедневной перезагрузки..."
 apt update -qq
 apt install -y -qq cron
+
 systemctl enable cron
 systemctl start cron
 
-# Крон на ежедневную перезагрузку в 2:00
-(crontab -l 2>/dev/null; echo "0 2 * * * /usr/bin/systemctl reboot") | crontab -
+# Безопасная установка cron-задачи на перезагрузку
+crontab -l 2>/dev/null | grep -v systemctl.reboot | {
+  cat
+  echo "0 2 * * * /usr/bin/systemctl reboot"
+} | crontab -
 
+echo "=== Установка Mieru ==="
 
 port_in_use() {
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$" || \
@@ -78,7 +85,7 @@ cat > /tmp/mita_config.json <<EOF
   "users": [{"name": "${USERNAME}", "password": "${PASSWORD}"}],
   "loggingLevel": "DEBUG",
   "traffic_pattern": "GgQIARAK",
-  "multiplexing": [{"level":"MULTIPLEXING_MIDDLE"}],
+  "multiplexing": {"level": "MULTIPLEXING_MIDDLE"},
   "mtu": 1280
 }
 EOF
@@ -90,14 +97,21 @@ systemctl enable mita
 
 PUBLIC_IP=$(get_public_ip)
 
-# === Hardening SSH + Firewall ===
-# Меняем порт SSH
+echo
+echo "=== Mieru EU готов ==="
+echo
+echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える"
+
+# === SSH + UFW ===
+echo
+echo "Настройка SSH и Firewall..."
+
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
+
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
 sed -i '/^#\?Port /d' /etc/ssh/sshd_config
 echo "Port $NEW_SSH_PORT" >> /etc/ssh/sshd_config
 
-# Отключаем парольную аутентификацию
 sed -i '/^#\?PasswordAuthentication /d' /etc/ssh/sshd_config
 echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
 
@@ -106,23 +120,21 @@ echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
 systemctl restart ssh || systemctl restart sshd
 
-# === UFW ===
+# UFW
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming
 ufw default allow outgoing
-
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$MIERU_PORT"/udp
-
 ufw --force enable
-
 
 echo
 echo "=============================="
 echo "ГОТОВО"
-echo 
+echo "=============================="
+echo "Mieru порт:     $MIERU_PORT (UDP)"
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
+echo "Ссылка:"
 echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える"
-echo
 echo "=============================="
