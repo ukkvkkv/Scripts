@@ -6,7 +6,7 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; }
+port_in_use() { ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$" || ss -H -ulnp 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$"; }
 
 random_port() {
   local p
@@ -36,7 +36,7 @@ get_public_ip() {
   hostname -I | awk '{print $1}'
 }
 
-echo "=== Mieru EU Exit (чистый mita) ==="
+echo "=== Mieru EU Exit (UDP + рандомный порт) ==="
 
 LATEST_VERSION=$(curl -s https://api.github.com/repos/enfein/mieru/releases/latest | grep '"tag_name"' | sed -E 's/.*"v?([^"]+)".*/\1/' || echo "3.34.0")
 
@@ -47,21 +47,22 @@ curl -LSO "https://github.com/enfein/mieru/releases/download/v${LATEST_VERSION}/
 sudo dpkg -i "${DEB_FILE}" >/dev/null 2>&1 || sudo apt-get install -f -y -qq >/dev/null 2>&1
 rm -f "${DEB_FILE}"
 
-EU_PORT=$(random_port)
-EU_USER="u$(openssl rand -hex 5)"
-EU_PASS=$(random_pass)
+USERNAME="u$(openssl rand -hex 5)"
+PASSWORD=$(openssl rand -base64 28 | tr -d '/+=' | cut -c1-24)
+PORT=$(random_port)
 
 cat > /tmp/mita_config.json <<EOF
 {
-  "portBindings": [{"port": ${EU_PORT}, "protocol": "TCP"}],
-  "users": [{"name": "${EU_USER}", "password": "${EU_PASS}"}],
+  "portBindings": [{"port": ${PORT}, "protocol": "UDP"}],
+  "users": [{"name": "${USERNAME}", "password": "${PASSWORD}"}],
   "loggingLevel": "ERROR",
   "mtu": 1400
 }
 EOF
 
-mita apply config /tmp/mita_config.json
-mita start
+sg mita -c "mita apply config /tmp/mita_config.json" 2>/dev/null || true
+systemctl daemon-reload
+systemctl restart mita
 systemctl enable mita
 
 PUBLIC_IP=$(get_public_ip)
@@ -69,4 +70,4 @@ PUBLIC_IP=$(get_public_ip)
 echo
 echo "=== Mieru готов ==="
 echo
-echo "mierus://${EU_USER}:${EU_PASS}@${PUBLIC_IP}?udp=0&transport=tcp&port=${EU_PORT}&profile=見た"
+echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${PORT}&profile=見える"
