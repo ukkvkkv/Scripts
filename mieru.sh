@@ -127,5 +127,5 @@ echo "ГОТОВО"
 echo
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
-echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える"
+echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える&traffic-pattern=GgQIARAK"
 echo "=============================="
