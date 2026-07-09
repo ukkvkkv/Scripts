@@ -18,20 +18,6 @@ net.ipv4.tcp_congestion_control=bbr
 EOF
 sysctl -p
 
-# Устанавливаем и настраиваем cron + ежедневную перезагрузку
-echo "Настройка cron и ежедневной перезагрузки..."
-apt update -qq
-apt install -y -qq cron
-
-systemctl enable cron
-systemctl start cron
-
-# Безопасная установка cron-задачи на перезагрузку
-crontab -l 2>/dev/null | grep -v systemctl.reboot | {
-  cat
-  echo "0 2 * * * /usr/bin/systemctl reboot"
-} | crontab -
-
 echo "=== Установка Mieru ==="
 
 port_in_use() {
@@ -97,15 +83,8 @@ systemctl enable mita
 
 PUBLIC_IP=$(get_public_ip)
 
-echo
-echo "=== Mieru EU готов ==="
-echo
-echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える"
 
-# === SSH + UFW ===
-echo
-echo "Настройка SSH и Firewall..."
-
+# === SSH + Fail2Ban + UFW ===
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
 
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak
@@ -120,7 +99,23 @@ echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
 
 systemctl restart ssh || systemctl restart sshd
 
-# UFW
+# === Установка и настройка Fail2Ban ===
+apt install -y fail2ban
+
+cat > /etc/fail2ban/jail.d/sshd.conf <<EOF
+[sshd]
+enabled = true
+port = $NEW_SSH_PORT
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+EOF
+
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+# === UFW ===
 ufw --force reset >/dev/null 2>&1 || true
 ufw default deny incoming
 ufw default allow outgoing
@@ -131,10 +126,8 @@ ufw --force enable
 echo
 echo "=============================="
 echo "ГОТОВО"
-echo "=============================="
-echo "Mieru порт:     $MIERU_PORT (UDP)"
+echo
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
-echo "Ссылка:"
 echo "mierus://${USERNAME}:${PASSWORD}@${PUBLIC_IP}?udp=1&transport=udp&port=${MIERU_PORT}&profile=見える"
 echo "=============================="
