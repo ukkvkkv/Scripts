@@ -17,14 +17,6 @@ EOF
 
 sysctl -p
 
-# Устанавливаем cron
-apt update -qq
-apt install -y -qq cron
-systemctl enable cron
-systemctl start cron
-
-# Крон на ежедневную перезагрузку в 2:00
-(crontab -l 2>/dev/null; echo "0 2 * * * /usr/bin/systemctl reboot") | crontab -
 
 port_in_use() {
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${1}$" || \
@@ -75,8 +67,10 @@ cat > /tmp/mita_config.json <<EOF
 {
   "portBindings": [{"port": ${MIERU_PORT}, "protocol": "UDP"}],
   "users": [{"name": "${USERNAME}", "password": "${PASSWORD}"}],
-  "loggingLevel": "ERROR",
-  "mtu": 1400
+  "loggingLevel": "DEBUG",
+  "traffic_pattern": "GgQIARAK",
+  "multiplexing": [{"level":"MULTIPLEXING_MIDDLE"}],
+  "mtu": 1280
 }
 EOF
 
@@ -112,6 +106,16 @@ ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$MIERU_PORT"/udp
 
 ufw --force enable
+
+
+# Устанавливаем cron
+apt update -qq
+apt install -y -qq cron
+systemctl enable cron
+systemctl start cron
+
+# Крон на ежедневную перезагрузку в 2:00
+(crontab -l 2>/dev/null; echo "0 2 * * * /usr/bin/systemctl reboot") | crontab -
 
 echo
 echo "=============================="
