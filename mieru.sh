@@ -70,7 +70,6 @@ cat > /tmp/mita_config.json <<EOF
   "portBindings": [{"port": ${MIERU_PORT}, "protocol": "UDP"}],
   "users": [{"name": "${USERNAME}", "password": "${PASSWORD}"}],
   "loggingLevel": "DEBUG",
-  "traffic_pattern": "GgQIARAK",
   "multiplexing": {"level": "MULTIPLEXING_MIDDLE"},
   "mtu": 1280
 }
