@@ -6,12 +6,21 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+cat > /etc/sysctl.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+EOF
+sysctl -p
+
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 valid_domain() { [[ "$1" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
 
 get_public_ip() {
   local ip=""
-  for url in "https://api.ipify.org" "https://ifconfig.me"; do
+  for url in "https://api.ipify.org" "https://ifconfig.me" "https://icanhazip.com"; do
     ip=$(curl -4fsSL --max-time 8 "$url" 2>/dev/null || true)
     if [[ "$ip" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
       echo "$ip"
@@ -91,11 +100,9 @@ prepare_certs() {
     chmod 600 "${dst_dir}/privkey.pem"
   fi
 
-
   echo "$dst_dir"
 }
 
-echo "=== Установка EU Hysteria2 exit-сервера на sing-box ==="
 read -rp "Введите домен EU-сервера: " DOMAIN
 DOMAIN="${DOMAIN,,}"
 if ! valid_domain "$DOMAIN"; then
@@ -106,7 +113,7 @@ fi
 read -rp "Email для Let's Encrypt (можно оставить пустым): " EMAIL
 
 apt update
-apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables
+apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban
 
 PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$DOMAIN" | awk '{print $1; exit}' || true)
@@ -132,14 +139,16 @@ EU_PASS=$(random_pass)
 ufw allow 80/tcp 2>/dev/null || true
 open_udp_port "$EU_PORT"
 
+# Останавливаем старые сервисы
 systemctl stop hysteria-server.service 2>/dev/null || true
 systemctl disable hysteria-server.service 2>/dev/null || true
 systemctl stop hysteria-client-eu.service 2>/dev/null || true
 systemctl disable hysteria-client-eu.service 2>/dev/null || true
-
-install_singbox
 systemctl stop sing-box 2>/dev/null || true
 
+install_singbox
+
+# Let's Encrypt
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
   CERTBOT_ARGS+=(-m "$EMAIL")
@@ -150,6 +159,7 @@ certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$DOMAIN")
 
+# Конфиг sing-box
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF_CONF
 {
@@ -202,11 +212,42 @@ if ! systemctl is-active --quiet sing-box; then
   exit 1
 fi
 
+NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
+sed -i '/^#\?Port /d' /etc/ssh/sshd_config
+echo "Port $NEW_SSH_PORT" >> /etc/ssh/sshd_config
+sed -i '/^#\?PasswordAuthentication /d' /etc/ssh/sshd_config
+echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+sed -i '/^#\?PubkeyAuthentication /d' /etc/ssh/sshd_config
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+
+systemctl restart ssh || systemctl restart sshd
+
+cat > /etc/fail2ban/jail.d/sshd.conf <<EOF
+[sshd]
+enabled = true
+port = $NEW_SSH_PORT
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+EOF
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+ufw --force reset >/dev/null 2>&1 || true
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow "$NEW_SSH_PORT"/tcp
+ufw allow "$EU_PORT"/udp
+ufw --force enable
+
 PASS_ENC=$(urlencode "$EU_PASS")
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}#hys2-eu-singbox"
 
 echo
-echo "=== EU sing-box сервер готов ==="
-echo "Ссылка:"
+echo "=== hysteria2 сервер готов ==="
+echo "Новый SSH порт: $NEW_SSH_PORT"
+echo 
 echo "$EU_LINK"
