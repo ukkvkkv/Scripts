@@ -264,7 +264,7 @@ ufw --force enable
 
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 PATH_ENC=$(urlencode "$XHTTP_PATH")
-VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=randomized&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=randomized#xhttp"
+VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=firefox&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=randomized#xhttp"
 
 echo
 echo "=== Готово ==="
