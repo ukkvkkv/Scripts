@@ -110,7 +110,7 @@ if ! valid_domain "$DOMAIN"; then
   exit 1
 fi
 
-read -rp "Email для Let's Encrypt (можно оставить пустым): " EMAIL
+EMAIL=""
 
 apt update
 apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban
@@ -269,8 +269,7 @@ ufw --force enable
 
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 PATH_ENC=$(urlencode "$XHTTP_PATH")
-# fp=random: клиент на каждое соединение выбирает случайный TLS-отпечаток популярного браузера через uTLS
-VLESS_LINK="vless://${UUID}@${DOMAIN}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=random#vless-xhttp"
+VLESS_LINK="vless://${UUID}@${DOMAIN}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=randomized#vless-xhttp"
 
 echo
 echo "=== Готово ==="
