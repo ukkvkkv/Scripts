@@ -91,9 +91,14 @@ prepare_certs() {
   cp -f "${src_dir}/fullchain.pem" "${dst_dir}/fullchain.pem"
   cp -f "${src_dir}/privkey.pem" "${dst_dir}/privkey.pem"
 
-  chmod 755 /usr/local/etc/xray/certs "$dst_dir"
+  local xray_group
+  xray_group=$(id -gn nobody 2>/dev/null || echo nogroup)
+
+  chmod 755 /usr/local/etc/xray/certs
+  chmod 750 "$dst_dir"
+  chgrp -R "$xray_group" "$dst_dir"
   chmod 644 "${dst_dir}/fullchain.pem"
-  chmod 600 "${dst_dir}/privkey.pem"
+  chmod 640 "${dst_dir}/privkey.pem"
 
   echo "$dst_dir"
 }
