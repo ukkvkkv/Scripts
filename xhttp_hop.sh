@@ -36,7 +36,6 @@ port_in_use() {
 }
 
 random_path() {
-  # случайный путь для xhttp, чтобы не палиться на дефолтном /
   echo "/$(openssl rand -hex 6)"
 }
 
@@ -89,8 +88,6 @@ prepare_certs() {
 
   echo "$dst_dir"
 }
-
-# Разбирает vless://UUID@HOST:PORT?params#tag и печатает bash-присваивания для eval
 parse_vless_link() {
   local link="$1"
   python3 - "$link" <<'PY'
@@ -128,7 +125,7 @@ for k, v in out.items():
 PY
 }
 
-read -rp "Введите домен ЭТОГО (входного) сервера: " DOMAIN
+read -rp "Введите домен сервера: " DOMAIN
 DOMAIN="${DOMAIN,,}"
 if ! valid_domain "$DOMAIN"; then
   echo "Ошибка: домен выглядит некорректно: $DOMAIN"
@@ -136,17 +133,16 @@ if ! valid_domain "$DOMAIN"; then
 fi
 
 echo
-echo "Вставь vless-ссылку ВЫХОДНОГО сервера (её дал первый скрипт на втором сервере):"
+echo "Вставь vless-ссылку"
 read -rp "> " EXIT_LINK
 if [[ "$EXIT_LINK" != vless://* ]]; then
-  echo "Ошибка: это не похоже на vless-ссылку (должна начинаться с vless://)"
+  echo "Ошибка: это не похоже на vless-ссылку"
   exit 1
 fi
 
 eval "$(parse_vless_link "$EXIT_LINK")"
 
 echo
-echo "Разобрал ссылку выходного сервера:"
 echo "  host:    $EXIT_HOST"
 echo "  port:    $EXIT_PORT"
 echo "  sni:     $EXIT_SNI"
@@ -195,7 +191,6 @@ install_xray
 
 UUID=$(xray uuid)
 
-# Let's Encrypt (для входного сервера — свой сертификат, независимый от выходного)
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
   CERTBOT_ARGS+=(-m "$EMAIL")
@@ -205,10 +200,6 @@ fi
 certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$DOMAIN")
-
-# Конфиг Xray входного сервера:
-#   inbound  — обычный VLESS+XHTTP+TLS, к нему подключается клиент
-#   outbound — vnext на выходной сервер (второй хоп), тем же транспортом (xhttp+tls)
 mkdir -p /usr/local/etc/xray
 cat > /usr/local/etc/xray/config.json <<EOF_CONF
 {
@@ -347,7 +338,7 @@ ufw --force enable
 
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 PATH_ENC=$(urlencode "$XHTTP_PATH")
-VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=firefox&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=randomized#xhttp"
+VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=firefox&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=firefox#xhttp"
 
 echo
 echo "=== Готово ==="
