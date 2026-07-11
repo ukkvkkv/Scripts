@@ -295,11 +295,6 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
     "rules": [
       {
         "type": "field",
-        "ip": ["geoip:private"],
-        "outboundTag": "block"
-      },
-      {
-        "type": "field",
         "inboundTag": ["vless-xhttp-in"],
         "outboundTag": "chain-to-exit"
       }
