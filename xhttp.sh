@@ -144,11 +144,6 @@ XHTTP_PATH=$(random_path)
 ufw allow 80/tcp 2>/dev/null || true
 open_tcp_port "$VLESS_PORT"
 
-# Останавливаем старые сервисы (если раньше стоял hysteria2/sing-box)
-systemctl stop hysteria-server.service 2>/dev/null || true
-systemctl disable hysteria-server.service 2>/dev/null || true
-systemctl stop sing-box 2>/dev/null || true
-systemctl disable sing-box 2>/dev/null || true
 systemctl stop xray 2>/dev/null || true
 
 install_xray
@@ -269,7 +264,7 @@ ufw --force enable
 
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 PATH_ENC=$(urlencode "$XHTTP_PATH")
-VLESS_LINK="vless://${UUID}@${DOMAIN}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=randomized#vless-xhttp"
+VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=randomized&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=randomized#xhttp"
 
 echo
 echo "=== Готово ==="
