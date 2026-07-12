@@ -149,7 +149,7 @@ read -rp "Вставь ссылку EU-сервера hysteria2://...: " EU_LINK
 eval "$(parse_eu_link "$EU_LINK")"
 
 apt update
-apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables
+apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban
 
 PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$RU_DOMAIN" | awk '{print $1; exit}' || true)
@@ -268,11 +268,42 @@ if ! systemctl is-active --quiet sing-box; then
   exit 1
 fi
 
+NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
+cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
+sed -i '/^#\?Port /d' /etc/ssh/sshd_config
+echo "Port $NEW_SSH_PORT" >> /etc/ssh/sshd_config
+sed -i '/^#\?PasswordAuthentication /d' /etc/ssh/sshd_config
+echo "PasswordAuthentication no" >> /etc/ssh/sshd_config
+sed -i '/^#\?PubkeyAuthentication /d' /etc/ssh/sshd_config
+echo "PubkeyAuthentication yes" >> /etc/ssh/sshd_config
+
+systemctl restart ssh || systemctl restart sshd
+
+cat > /etc/fail2ban/jail.d/sshd.conf <<EOF
+[sshd]
+enabled = true
+port = $NEW_SSH_PORT
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 5
+bantime = 3600
+EOF
+systemctl enable fail2ban
+systemctl restart fail2ban
+
+ufw --force reset >/dev/null 2>&1 || true
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow "$NEW_SSH_PORT"/tcp
+ufw allow "$RU_PORT"/udp
+ufw --force enable
+
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
 RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}#hys2-multihop-singbox"
 
 echo
-echo "=== RU sing-box сервер готов ==="
-echo "Ссылка:"
+echo "=== Готово ==="
+echo "Новый SSH порт: $NEW_SSH_PORT"
+echo
 echo "$RU_LINK"
