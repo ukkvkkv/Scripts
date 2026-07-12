@@ -244,7 +244,7 @@ ufw --force enable
 
 PASS_ENC=$(urlencode "$EU_PASS")
 DOMAIN_ENC=$(urlencode "$DOMAIN")
-EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}#hys2-eu-singbox"
+EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}#hy2sb"
 
 echo
 echo "=== hysteria2 сервер готов ==="
