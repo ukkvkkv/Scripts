@@ -135,6 +135,7 @@ fi
 
 EU_PORT=$(random_port)
 EU_PASS=$(random_pass)
+EU_OBFS_PASS=$(random_pass)
 
 ufw allow 80/tcp 2>/dev/null || true
 open_udp_port "$EU_PORT"
@@ -178,6 +179,10 @@ cat > /etc/sing-box/config.json <<EOF_CONF
           "password": "${EU_PASS}"
         }
       ],
+      "obfs": {
+        "type": "salamander",
+        "password": "${EU_OBFS_PASS}"
+      },
       "tls": {
         "enabled": true,
         "server_name": "${DOMAIN}",
@@ -244,7 +249,8 @@ ufw --force enable
 
 PASS_ENC=$(urlencode "$EU_PASS")
 DOMAIN_ENC=$(urlencode "$DOMAIN")
-EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}#hy2sb"
+OBFS_PASS_ENC=$(urlencode "$EU_OBFS_PASS")
+EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hy2sb"
 
 echo
 echo "=== hysteria2 сервер готов ==="
