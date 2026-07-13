@@ -123,6 +123,8 @@ auth = unquote(u.username)
 sni = qs.get("sni", qs.get("peer", [host]))[0]
 insecure_raw = qs.get("insecure", ["0"])[0].lower()
 insecure = True if insecure_raw in ("1", "true", "yes") else False
+obfs_type = qs.get("obfs", [""])[0]
+obfs_pass = unquote(qs.get("obfs-password", [""])[0]) if qs.get("obfs-password") else ""
 
 for k, v in {
     "EU_HOST": host,
@@ -130,6 +132,8 @@ for k, v in {
     "EU_PASS": auth,
     "EU_SNI": sni,
     "EU_INSECURE": "true" if insecure else "false",
+    "EU_OBFS": obfs_type,
+    "EU_OBFS_PASS": obfs_pass,
 }.items():
     print(f"{k}={shlex.quote(v)}")
 PY
@@ -171,6 +175,7 @@ fi
 
 RU_PORT=$(random_port)
 RU_PASS=$(random_pass)
+RU_OBFS_PASS=$(random_pass)
 
 ufw allow 80/tcp 2>/dev/null || true
 open_udp_port "$RU_PORT"
@@ -193,6 +198,17 @@ certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$RU_DOMAIN")
 
+# Блок обфускации для исходящего соединения RU -> EU.
+# Заполняется только если во вставленной EU-ссылке были обнаружены obfs/obfs-password.
+EU_OBFS_BLOCK=""
+if [[ -n "${EU_OBFS_PASS:-}" ]]; then
+  EU_OBFS_BLOCK="      \"obfs\": {
+        \"type\": \"salamander\",
+        \"password\": \"${EU_OBFS_PASS}\"
+      },
+"
+fi
+
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF_CONF
 {
@@ -211,6 +227,10 @@ cat > /etc/sing-box/config.json <<EOF_CONF
           "password": "${RU_PASS}"
         }
       ],
+      "obfs": {
+        "type": "salamander",
+        "password": "${RU_OBFS_PASS}"
+      },
       "tls": {
         "enabled": true,
         "server_name": "${RU_DOMAIN}",
@@ -235,7 +255,7 @@ cat > /etc/sing-box/config.json <<EOF_CONF
       "server": "${EU_HOST}",
       "server_port": ${EU_PORT},
       "password": "${EU_PASS}",
-      "tls": {
+${EU_OBFS_BLOCK}      "tls": {
         "enabled": true,
         "server_name": "${EU_SNI}",
         "insecure": ${EU_INSECURE}
@@ -300,7 +320,8 @@ ufw --force enable
 
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
-RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}#hys2-multihop-singbox"
+OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
+RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2-multihop-singbox"
 
 echo
 echo "=== Готово ==="
