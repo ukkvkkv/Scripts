@@ -151,6 +151,9 @@ for k, v in fields.items():
 PY
 }
 
+echo "=== Установка RU AmneziaWG entry-сервера с выходом через EU-хоп ==="
+echo "Вставь блок конфига, который вывел awgsb_eu.sh целиком,"
+echo "и в новой строке напиши END, затем Enter:"
 EU_HOP_CONF=""
 while IFS= read -r line; do
   [[ "$line" == "END" ]] && break
@@ -168,11 +171,7 @@ if [[ -z "$WAN_IF" ]]; then
   echo "Не удалось определить исходящий сетевой интерфейс (WAN). Проверь маршрут по умолчанию."
   exit 1
 fi
-if [[ -z "$PUBLIC_IP" ]]; then
-  echo "Не удалось автоопределить публичный IP сервера."
-  exit 1
-fi
-echo "Текущий публичный IPv4 RU-сервера: ${PUBLIC_IP}"
+echo "Текущий публичный IPv4 RU-сервера: ${PUBLIC_IP:-не удалось определить}"
 echo "WAN-интерфейс: $WAN_IF"
 
 install_amneziawg
@@ -371,7 +370,10 @@ ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
 ufw --force enable
 
-RU_ENDPOINT_HOST="$PUBLIC_IP"
+read -rp "Введите домен или IP RU-сервера для Endpoint конечного клиента (пусто = автоопределение публичного IP): " RU_ENDPOINT_HOST
+if [[ -z "$RU_ENDPOINT_HOST" ]]; then
+  RU_ENDPOINT_HOST="$PUBLIC_IP"
+fi
 
 CLIENT_CONF=$(cat <<EOF_CLIENT
 [Interface]
@@ -397,7 +399,12 @@ EOF_CLIENT
 )
 
 echo
-echo "=== Готово: каскад RU -> EU настроен ==="
+echo "=== Готово==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
+echo "----------------------------------------------------------------------"
 echo "$CLIENT_CONF"
+echo "----------------------------------------------------------------------"
+echo
+echo "Обновить/пересобрать список RU-сетей вручную можно так:"
+echo "  bash /root/awg/awg-routing.sh"
