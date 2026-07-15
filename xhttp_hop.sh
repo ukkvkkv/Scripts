@@ -35,14 +35,6 @@ port_in_use() {
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"
 }
 
-random_path() {
-  echo "/$(openssl rand -hex 6)"
-}
-
-urlencode() {
-  python3 -c 'import sys, urllib.parse; print(urllib.parse.quote(sys.argv[1], safe=""))' "$1"
-}
-
 open_tcp_port() {
   local p="$1"
   if need_cmd ufw; then
@@ -88,6 +80,8 @@ prepare_certs() {
 
   echo "$dst_dir"
 }
+
+# Парсит вставленную vless-ссылку EU-сервера (exit) и печатает shell-присвоения.
 parse_vless_link() {
   local link="$1"
   python3 - "$link" <<'PY'
@@ -119,13 +113,17 @@ out = {
     "EXIT_PATH": params.get("path", "/"),
     "EXIT_SECURITY": params.get("security", "tls"),
     "EXIT_NETWORK": params.get("type", "xhttp"),
+    "EXIT_FLOW": params.get("flow", ""),
+    "EXIT_FP": params.get("fp", "chrome"),
+    "EXIT_PBK": params.get("pbk", ""),
+    "EXIT_SID": params.get("sid", ""),
 }
 for k, v in out.items():
     print(f"{k}={shlex.quote(v)}")
 PY
 }
 
-read -rp "Введите домен сервера: " DOMAIN
+read -rp "Введите домен RU-сервера (должен указывать на этот сервер): " DOMAIN
 DOMAIN="${DOMAIN,,}"
 if ! valid_domain "$DOMAIN"; then
   echo "Ошибка: домен выглядит некорректно: $DOMAIN"
@@ -133,7 +131,7 @@ if ! valid_domain "$DOMAIN"; then
 fi
 
 echo
-echo "Вставь vless-ссылку"
+echo "Вставь vless-ссылку EU (exit) сервера:"
 read -rp "> " EXIT_LINK
 if [[ "$EXIT_LINK" != vless://* ]]; then
   echo "Ошибка: это не похоже на vless-ссылку"
@@ -143,11 +141,11 @@ fi
 eval "$(parse_vless_link "$EXIT_LINK")"
 
 echo
-echo "  host:    $EXIT_HOST"
-echo "  port:    $EXIT_PORT"
-echo "  sni:     $EXIT_SNI"
-echo "  path:    $EXIT_PATH"
-echo "  network: $EXIT_NETWORK"
+echo "  host:     $EXIT_HOST"
+echo "  port:     $EXIT_PORT"
+echo "  sni:      $EXIT_SNI"
+echo "  path:     $EXIT_PATH"
+echo "  network:  $EXIT_NETWORK"
 echo "  security: $EXIT_SECURITY"
 echo
 
@@ -160,7 +158,7 @@ PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$DOMAIN" | awk '{print $1; exit}' || true)
 
 echo
-echo "Текущий публичный IPv4 сервера: ${PUBLIC_IP:-не удалось определить}"
+echo "Текущий публичный IPv4 RU-сервера: ${PUBLIC_IP:-не удалось определить}"
 echo "DNS A-запись домена $DOMAIN: ${DNS_IP:-не найдена}"
 if [[ -n "${PUBLIC_IP:-}" && -n "${DNS_IP:-}" && "$PUBLIC_IP" != "$DNS_IP" ]]; then
   echo "ВНИМАНИЕ: домен не указывает на текущий IPv4 сервера. Certbot может не выпустить сертификат."
@@ -174,13 +172,12 @@ if port_in_use 80; then
   exit 1
 fi
 
-VLESS_PORT=8443
+VLESS_PORT=443
 if port_in_use "$VLESS_PORT"; then
   echo "Ошибка: TCP-порт $VLESS_PORT уже занят."
   ss -ltnp | grep ":${VLESS_PORT}" || true
   exit 1
 fi
-XHTTP_PATH=$(random_path)
 
 ufw allow 80/tcp 2>/dev/null || true
 open_tcp_port "$VLESS_PORT"
@@ -200,6 +197,7 @@ fi
 certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$DOMAIN")
+
 mkdir -p /usr/local/etc/xray
 cat > /usr/local/etc/xray/config.json <<EOF_CONF
 {
@@ -208,7 +206,7 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
   },
   "inbounds": [
     {
-      "tag": "vless-xhttp-in",
+      "tag": "vless-tls-in",
       "listen": "0.0.0.0",
       "port": ${VLESS_PORT},
       "protocol": "vless",
@@ -216,21 +214,18 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
         "clients": [
           {
             "id": "${UUID}",
-            "flow": ""
+            "flow": "xtls-rprx-vision"
           }
         ],
         "decryption": "none"
       },
       "streamSettings": {
-        "network": "xhttp",
-        "xhttpSettings": {
-          "path": "${XHTTP_PATH}",
-          "mode": "auto"
-        },
+        "network": "tcp",
         "security": "tls",
         "tlsSettings": {
           "serverName": "${DOMAIN}",
           "minVersion": "1.2",
+          "alpn": ["h2", "http/1.1"],
           "certificates": [
             {
               "certificateFile": "${CERT_DIR}/fullchain.pem",
@@ -257,7 +252,7 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
             "users": [
               {
                 "id": "${EXIT_UUID}",
-                "flow": "",
+                "flow": "${EXIT_FLOW}",
                 "encryption": "none"
               }
             ]
@@ -272,7 +267,16 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
         },
         "security": "${EXIT_SECURITY}",
         "tlsSettings": {
-          "serverName": "${EXIT_SNI}"
+          "serverName": "${EXIT_SNI}",
+          "fingerprint": "${EXIT_FP}"
+        },
+        "realitySettings": {
+          "show": false,
+          "fingerprint": "${EXIT_FP}",
+          "serverName": "${EXIT_SNI}",
+          "publicKey": "${EXIT_PBK}",
+          "shortId": "${EXIT_SID}",
+          "spiderX": ""
         }
       }
     },
@@ -286,7 +290,7 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
     "rules": [
       {
         "type": "field",
-        "inboundTag": ["vless-xhttp-in"],
+        "inboundTag": ["vless-tls-in"],
         "outboundTag": "chain-to-exit"
       }
     ]
@@ -336,12 +340,10 @@ ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$VLESS_PORT"/tcp
 ufw --force enable
 
-DOMAIN_ENC=$(urlencode "$DOMAIN")
-PATH_ENC=$(urlencode "$XHTTP_PATH")
-VLESS_LINK="vless://${UUID}@${PUBLIC_IP}:${VLESS_PORT}?type=xhttp&security=tls&sni=${DOMAIN_ENC}&path=${PATH_ENC}&mode=auto&fp=firefox&obfs=xhttp&tls=1&peer=${DOMAIN_ENC}&udp=3&fingerprint=firefox#xhttp"
+CLIENT_LINK="vless://${UUID}@${DOMAIN}:${VLESS_PORT}?encryption=none&flow=xtls-rprx-vision&security=tls&sni=${DOMAIN}&fp=chrome&type=tcp&alpn=h2,http%2F1.1#ru-tls-hop"
 
 echo
 echo "=== Готово ==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
-echo "$VLESS_LINK"
+echo "$CLIENT_LINK"
