@@ -107,8 +107,6 @@ install_amneziawg() {
   fi
 }
 
-read -rp "Введите домен или IP EU-сервера для Endpoint (пусто = автоопределение публичного IP): " EU_ENDPOINT_HOST
-
 apt update
 apt install -y curl ca-certificates python3 iproute2 iptables fail2ban ufw ipset dnsutils
 
@@ -118,10 +116,12 @@ if [[ -z "$WAN_IF" ]]; then
   echo "Не удалось определить исходящий сетевой интерфейс (WAN). Проверь маршрут по умолчанию."
   exit 1
 fi
-
-if [[ -z "$EU_ENDPOINT_HOST" ]]; then
-  EU_ENDPOINT_HOST="$PUBLIC_IP"
+if [[ -z "$PUBLIC_IP" ]]; then
+  echo "Не удалось автоопределить публичный IP сервера."
+  exit 1
 fi
+
+EU_ENDPOINT_HOST="$PUBLIC_IP"
 echo "Текущий публичный IPv4 сервера: ${PUBLIC_IP:-не удалось определить}"
 echo "WAN-интерфейс: $WAN_IF"
 echo "Endpoint для клиентов будет: $EU_ENDPOINT_HOST"
@@ -245,8 +245,4 @@ echo
 echo "=== AmneziaWG EU (выход) сервер готов ==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
-echo "Скопируй блок ниже целиком (вместе со строкой END в конце) и вставь"
-echo "его на RU-сервере, когда awgsb_ru.sh попросит вставить конфиг EU-хопа:"
-echo "----------------------------------------------------------------------"
 echo "$RU_HOP_CONF"
-echo "----------------------------------------------------------------------"
