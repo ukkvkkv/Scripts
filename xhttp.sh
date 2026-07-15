@@ -207,6 +207,25 @@ cat > /usr/local/etc/xray/config.json <<EOF_CONF
       }
     }
   ],
+  "routing": {
+  "domainStrategy": "IPIfNonMatch",
+  "rules": [
+    {
+      "type": "field",
+      "domain": [
+        "regexp:\\.ru$",
+        "regexp:\\.su$",
+        "regexp:\\.xn--p1ai$"
+      ],
+      "outboundTag": "block"
+    },
+    {
+      "type": "field",
+      "ip": ["geoip:ru"],
+      "outboundTag": "block"
+    }
+  ]
+},
   "outbounds": [
     {
       "protocol": "freedom",
