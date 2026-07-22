@@ -318,6 +318,17 @@ ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
 ufw --force enable
 
+cat > /etc/sysctl.conf <<'EOF'
+net.ipv6.conf.all.disable_ipv6 = 1
+net.ipv6.conf.default.disable_ipv6 = 1
+net.ipv6.conf.lo.disable_ipv6 = 1
+net.core.default_qdisc = fq
+net.ipv4.tcp_congestion_control = bbr
+net.core.rmem_max = 16777216
+net.core.wmem_max = 16777216
+EOF
+sysctl -p
+
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
 OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
