@@ -6,7 +6,7 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
-SUB_TOKEN="${a1236020fcd2e4a8d46f047ecc63f5c2}"
+SUB_TOKEN="a1236020fcd2e4a8d46f047ecc63f5c2"
 SUB_DIR="/var/www/sub"
 if ! [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
   echo "Ошибка: не задан токен подписки."
