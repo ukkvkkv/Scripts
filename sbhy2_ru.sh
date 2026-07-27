@@ -2,11 +2,25 @@
 set -Eeuo pipefail
 
 if [[ ${EUID} -ne 0 ]]; then
-  echo "Запусти скрипт от root: sudo bash $0"
+  echo "Запусти от root: sudo -i, затем повтори команду."
+  exit 1
+fi
+
+SUB_TOKEN="${a1236020fcd2e4a8d46f047ecc63f5c2}"
+SUB_DIR="/var/www/sub"
+if ! [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
+  echo "Ошибка: не задан токен подписки."
+  echo
+  echo "Впиши его в переменную SUB_TOKEN в шапке скрипта."
+  echo "Сгенерировать новый:  openssl rand -hex 16"
+  echo
+  echo "Или разово, не редактируя файл, передай его при запуске:"
+  echo "  SUB_TOKEN=<токен> bash -c \"\$(curl -fsSL <URL-скрипта>)\""
   exit 1
 fi
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
+
 valid_domain() { [[ "$1" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
 
 get_public_ip() {
@@ -139,6 +153,171 @@ for k, v in {
 PY
 }
 
+
+# ============================================================================
+#  ПОДПИСКА ДЛЯ SING-BOX
+# ============================================================================
+
+# Клиентский конфиг. Роутинг на стороне клиента: .ru и локалка мимо туннеля,
+# всё остальное -> RU-сервер -> EU-сервер.
+write_client_config() {
+  local out="$1"
+  install -d -m 755 "$(dirname "$out")"
+
+  cat > "$out" <<EOF_CLIENT
+{
+  "log": {
+    "level": "error"
+  },
+
+  "dns": {
+    "servers": [
+      { "tag": "dns-remote", "type": "https", "server": "1.1.1.1", "detour": "proxy" },
+      { "tag": "dns-local",  "type": "local" }
+    ],
+    "rules": [
+      { "domain_suffix": [".ru"], "action": "route", "server": "dns-local" }
+    ],
+    "final": "dns-remote"
+  },
+
+  "inbounds": [
+    {
+      "type": "tun",
+      "tag": "tun-in",
+      "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
+      "mtu": 1400,
+      "auto_route": true
+    }
+  ],
+
+  "outbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "proxy",
+      "server": "${RU_DOMAIN}",
+      "server_port": ${RU_PORT},
+      "password": "${RU_PASS}",
+      "obfs": {
+        "type": "salamander",
+        "password": "${RU_OBFS_PASS}"
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "${RU_DOMAIN}"
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+
+  "route": {
+    "auto_detect_interface": true,
+    "default_domain_resolver": "dns-local",
+    "final": "proxy",
+    "rules": [
+      { "action": "sniff" },
+      { "ip_is_private": true, "outbound": "direct" },
+      { "domain_suffix": [".ru"], "outbound": "direct" }
+    ]
+  }
+}
+EOF_CLIENT
+
+  chmod 644 "$out"
+
+  # проверяем схему тем же бинарником, что стоит на сервере
+  if ! sing-box check -c "$out"; then
+    echo "Ошибка: сгенерированный клиентский конфиг не проходит sing-box check"
+    exit 1
+  fi
+}
+
+# nginx отдаёт конфиг по одному точному пути, всё остальное -> 404.
+# IPv4-only: sysctl в конце скрипта отключает IPv6.
+setup_nginx() {
+  rm -f /etc/nginx/sites-enabled/default
+
+  cat > /etc/nginx/sites-available/subscription.conf <<EOF_NGINX
+server {
+    listen 80;
+    server_name ${RU_DOMAIN};
+    location / { return 301 https://\$host\$request_uri; }
+}
+
+server {
+    listen 443 ssl;
+    server_name ${RU_DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${RU_DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:5m;
+
+    server_tokens off;
+    access_log off;          # в URL токен, в лог его писать незачем
+
+    root ${SUB_DIR};
+
+    location = /${SUB_TOKEN} {
+        default_type "text/plain; charset=utf-8";
+        add_header Cache-Control "no-store" always;
+        add_header X-Robots-Tag "noindex, nofollow" always;
+    }
+
+    location / { return 404; }
+}
+EOF_NGINX
+
+  ln -sf /etc/nginx/sites-available/subscription.conf \
+         /etc/nginx/sites-enabled/subscription.conf
+
+  nginx -t
+  systemctl enable nginx
+  systemctl restart nginx
+}
+
+# Продление сертификата: certbot --standalone требует свободный 80-й,
+# поэтому на время продления гасим nginx. Deploy-хук докладывает свежие
+# сертификаты в /etc/sing-box/certs и перезапускает sing-box —
+# без него сервер продолжал бы работать со старой копией.
+setup_renewal_hooks() {
+  install -d -m 755 /etc/letsencrypt/renewal-hooks/pre \
+                    /etc/letsencrypt/renewal-hooks/deploy \
+                    /etc/letsencrypt/renewal-hooks/post
+
+  cat > /etc/letsencrypt/renewal-hooks/pre/00-stop-nginx.sh <<'EOF_PRE'
+#!/bin/sh
+systemctl stop nginx 2>/dev/null || true
+EOF_PRE
+
+  cat > /etc/letsencrypt/renewal-hooks/deploy/10-singbox-certs.sh <<EOF_DEPLOY
+#!/bin/bash
+set -e
+DOMAIN="${RU_DOMAIN}"
+DST="/etc/sing-box/certs/\${DOMAIN}"
+install -d -m 755 "\$DST"
+cp -f "/etc/letsencrypt/live/\${DOMAIN}/fullchain.pem" "\$DST/fullchain.pem"
+cp -f "/etc/letsencrypt/live/\${DOMAIN}/privkey.pem"   "\$DST/privkey.pem"
+chmod 644 "\$DST/fullchain.pem"
+if getent group sing-box >/dev/null 2>&1; then
+  chgrp -R sing-box "\$DST"
+  chmod 640 "\$DST/privkey.pem"
+else
+  chmod 600 "\$DST/privkey.pem"
+fi
+systemctl restart sing-box
+EOF_DEPLOY
+
+  cat > /etc/letsencrypt/renewal-hooks/post/99-start-nginx.sh <<'EOF_POST'
+#!/bin/sh
+systemctl start nginx 2>/dev/null || true
+EOF_POST
+
+  chmod +x /etc/letsencrypt/renewal-hooks/pre/00-stop-nginx.sh \
+           /etc/letsencrypt/renewal-hooks/deploy/10-singbox-certs.sh \
+           /etc/letsencrypt/renewal-hooks/post/99-start-nginx.sh
+}
+
 echo "=== Установка RU Hysteria2 entry-сервера на sing-box с выходом через EU ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
@@ -153,7 +332,7 @@ read -rp "Вставь ссылку EU-сервера hysteria2://...: " EU_LINK
 eval "$(parse_eu_link "$EU_LINK")"
 
 apt update
-apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban
+apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban nginx
 
 PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$RU_DOMAIN" | awk '{print $1; exit}' || true)
@@ -166,6 +345,10 @@ if [[ -n "${PUBLIC_IP:-}" && -n "${DNS_IP:-}" && "$PUBLIC_IP" != "$DNS_IP" ]]; t
   read -rp "Продолжить всё равно? [y/N]: " CONTINUE
   [[ "${CONTINUE,,}" == "y" || "${CONTINUE,,}" == "yes" ]] || exit 1
 fi
+
+# nginx после установки стартует сам и занимает 80 — гасим,
+# порт нужен certbot --standalone
+systemctl stop nginx 2>/dev/null || true
 
 if port_in_use 80; then
   echo "Ошибка: TCP-порт 80 занят. Освободи его для certbot --standalone и запусти скрипт снова."
@@ -288,6 +471,12 @@ if ! systemctl is-active --quiet sing-box; then
   exit 1
 fi
 
+# ---- подписка для sing-box ----
+write_client_config "${SUB_DIR}/${SUB_TOKEN}"
+setup_nginx
+setup_renewal_hooks
+SUB_URL="https://${RU_DOMAIN}/${SUB_TOKEN}"
+
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
 sed -i '/^#\?Port /d' /etc/ssh/sshd_config
@@ -316,6 +505,8 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
+ufw allow 80/tcp     # certbot --standalone при продлении + редирект на https
+ufw allow 443/tcp    # страница подписки
 ufw --force enable
 
 cat > /etc/sysctl.conf <<'EOF'
@@ -334,8 +525,16 @@ DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
 OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
 RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2"
 
+# nginx мог не пережить ufw --force reset — убеждаемся, что жив
+systemctl is-active --quiet nginx || systemctl restart nginx
+
 echo
 echo "=== Готово ==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
+echo "--- Ссылка ---"
 echo "$RU_LINK"
+echo
+echo "--- Подписка ---"
+echo "$SUB_URL"
+echo
