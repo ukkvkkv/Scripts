@@ -7,15 +7,38 @@ if [[ ${EUID} -ne 0 ]]; then
 fi
 
 SUB_TOKEN="a1236020fcd2e4a8d46f047ecc63f5c2"
+SUB_TOKEN2="4ab0b523673328390d57976dc5e76729"
 SUB_DIR="/var/www/sub"
-if ! [[ "$SUB_TOKEN" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
-  echo "Ошибка: не задан токен подписки."
-  echo
-  echo "Впиши его в переменную SUB_TOKEN в шапке скрипта."
-  echo "Сгенерировать новый:  openssl rand -hex 16"
-  echo
-  echo "Или разово, не редактируя файл, передай его при запуске:"
-  echo "  SUB_TOKEN=<токен> bash -c \"\$(curl -fsSL <URL-скрипта>)\""
+SUB_PREFIX2="sub2"
+SUB2_BASE64="1"
+
+for _var in SUB_TOKEN SUB_TOKEN2; do
+  if ! [[ "${!_var}" =~ ^[A-Za-z0-9_-]{16,128}$ ]]; then
+    echo "Ошибка: не задан токен подписки (${_var})."
+    echo
+    echo "Впиши его в переменную ${_var} в шапке скрипта."
+    echo "Сгенерировать новый:  openssl rand -hex 16"
+    echo
+    echo "Или разово, не редактируя файл, передай его при запуске:"
+    echo "  ${_var}=<токен> bash -c \"\$(curl -fsSL <URL-скрипта>)\""
+    exit 1
+  fi
+done
+unset _var
+
+if ! [[ "$SUB_PREFIX2" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
+  echo "Ошибка: SUB_PREFIX2 должен быть из [A-Za-z0-9_-]."
+  exit 1
+fi
+
+SUB_PATH="/${SUB_TOKEN}"
+SUB_PATH2="/${SUB_PREFIX2}/${SUB_TOKEN2}"
+SUB_FILE="${SUB_DIR}${SUB_PATH}"
+SUB_FILE2="${SUB_DIR}${SUB_PATH2}"
+
+if [[ "$SUB_PATH" == "$SUB_PATH2" ]]; then
+  echo "Ошибка: пути подписок совпадают: ${SUB_PATH}"
+  echo "Поменяй SUB_TOKEN2 или SUB_PREFIX2."
   exit 1
 fi
 
@@ -153,13 +176,6 @@ for k, v in {
 PY
 }
 
-
-# ============================================================================
-#  ПОДПИСКА ДЛЯ SING-BOX
-# ============================================================================
-
-# Клиентский конфиг. Роутинг на стороне клиента: .ru и локалка мимо туннеля,
-# всё остальное -> RU-сервер -> EU-сервер.
 write_client_config() {
   local out="$1"
   install -d -m 755 "$(dirname "$out")"
@@ -224,16 +240,28 @@ write_client_config() {
 EOF_CLIENT
 
   chmod 644 "$out"
-
-  # проверяем схему тем же бинарником, что стоит на сервере
   if ! sing-box check -c "$out"; then
     echo "Ошибка: сгенерированный клиентский конфиг не проходит sing-box check"
     exit 1
   fi
 }
+write_link_config() {
+  local out="$1"
+  install -d -m 755 "$(dirname "$out")"
 
-# nginx отдаёт конфиг по одному точному пути, всё остальное -> 404.
-# IPv4-only: sysctl в конце скрипта отключает IPv6.
+  if [[ "$SUB2_BASE64" == "1" ]]; then
+    printf '%s\n' "$RU_LINK" | base64 -w0 > "$out"
+  else
+    printf '%s\n' "$RU_LINK" > "$out"
+  fi
+
+  chmod 644 "$out"
+
+  if [[ ! -s "$out" ]]; then
+    echo "Ошибка: файл второй подписки пустой: $out"
+    exit 1
+  fi
+}
 setup_nginx() {
   rm -f /etc/nginx/sites-enabled/default
 
@@ -258,7 +286,13 @@ server {
 
     root ${SUB_DIR};
 
-    location = /${SUB_TOKEN} {
+    location = ${SUB_PATH} {
+        default_type "text/plain; charset=utf-8";
+        add_header Cache-Control "no-store" always;
+        add_header X-Robots-Tag "noindex, nofollow" always;
+    }
+
+    location = ${SUB_PATH2} {
         default_type "text/plain; charset=utf-8";
         add_header Cache-Control "no-store" always;
         add_header X-Robots-Tag "noindex, nofollow" always;
@@ -275,11 +309,6 @@ EOF_NGINX
   systemctl enable nginx
   systemctl restart nginx
 }
-
-# Продление сертификата: certbot --standalone требует свободный 80-й,
-# поэтому на время продления гасим nginx. Deploy-хук докладывает свежие
-# сертификаты в /etc/sing-box/certs и перезапускает sing-box —
-# без него сервер продолжал бы работать со старой копией.
 setup_renewal_hooks() {
   install -d -m 755 /etc/letsencrypt/renewal-hooks/pre \
                     /etc/letsencrypt/renewal-hooks/deploy \
@@ -345,9 +374,6 @@ if [[ -n "${PUBLIC_IP:-}" && -n "${DNS_IP:-}" && "$PUBLIC_IP" != "$DNS_IP" ]]; t
   read -rp "Продолжить всё равно? [y/N]: " CONTINUE
   [[ "${CONTINUE,,}" == "y" || "${CONTINUE,,}" == "yes" ]] || exit 1
 fi
-
-# nginx после установки стартует сам и занимает 80 — гасим,
-# порт нужен certbot --standalone
 systemctl stop nginx 2>/dev/null || true
 
 if port_in_use 80; then
@@ -380,9 +406,6 @@ fi
 certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$RU_DOMAIN")
-
-# Блок обфускации для исходящего соединения RU -> EU.
-# Заполняется только если во вставленной EU-ссылке были обнаружены obfs/obfs-password.
 EU_OBFS_BLOCK=""
 if [[ -n "${EU_OBFS_PASS:-}" ]]; then
   EU_OBFS_BLOCK="      \"obfs\": {
@@ -470,12 +493,17 @@ if ! systemctl is-active --quiet sing-box; then
   journalctl --no-pager -e -u sing-box
   exit 1
 fi
+PASS_ENC=$(urlencode "$RU_PASS")
+DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
+OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
+RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2"
 
-# ---- подписка для sing-box ----
-write_client_config "${SUB_DIR}/${SUB_TOKEN}"
+write_client_config "${SUB_FILE}"   # sing-box JSON
+write_link_config   "${SUB_FILE2}"  # hysteria2://...
 setup_nginx
 setup_renewal_hooks
-SUB_URL="https://${RU_DOMAIN}/${SUB_TOKEN}"
+SUB_URL="https://${RU_DOMAIN}${SUB_PATH}"
+SUB_URL2="https://${RU_DOMAIN}${SUB_PATH2}"
 
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
@@ -505,8 +533,8 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
-ufw allow 80/tcp     # certbot --standalone при продлении + редирект на https
-ufw allow 443/tcp    # страница подписки
+ufw allow 80/tcp    
+ufw allow 443/tcp    
 ufw --force enable
 
 cat > /etc/sysctl.conf <<'EOF'
@@ -520,12 +548,6 @@ net.core.wmem_max = 16777216
 EOF
 sysctl -p
 
-PASS_ENC=$(urlencode "$RU_PASS")
-DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
-OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
-RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2"
-
-# nginx мог не пережить ufw --force reset — убеждаемся, что жив
 systemctl is-active --quiet nginx || systemctl restart nginx
 
 echo
@@ -535,6 +557,9 @@ echo
 echo "--- Ссылка ---"
 echo "$RU_LINK"
 echo
-echo "--- Подписка ---"
+echo "--- Подписка sing-box ---"
 echo "$SUB_URL"
+echo
+echo "--- Подписка ---"
+echo "$SUB_URL2"
 echo
