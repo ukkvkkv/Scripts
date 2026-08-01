@@ -9,7 +9,6 @@ fi
 SUB_TOKEN="a1236020fcd2e4a8d46f047ecc63f5c2"
 SUB_TOKEN2="4ab0b523673328390d57976dc5e76729"
 SUB_DIR="/var/www/sub"
-SUB_PREFIX2="sub2"
 SUB2_BASE64="1"
 
 for _var in SUB_TOKEN SUB_TOKEN2; do
@@ -26,19 +25,14 @@ for _var in SUB_TOKEN SUB_TOKEN2; do
 done
 unset _var
 
-if ! [[ "$SUB_PREFIX2" =~ ^[A-Za-z0-9_-]{1,64}$ ]]; then
-  echo "Ошибка: SUB_PREFIX2 должен быть из [A-Za-z0-9_-]."
-  exit 1
-fi
-
 SUB_PATH="/${SUB_TOKEN}"
-SUB_PATH2="/${SUB_PREFIX2}/${SUB_TOKEN2}"
+SUB_PATH2="/${SUB_TOKEN2}"
 SUB_FILE="${SUB_DIR}${SUB_PATH}"
 SUB_FILE2="${SUB_DIR}${SUB_PATH2}"
 
 if [[ "$SUB_PATH" == "$SUB_PATH2" ]]; then
   echo "Ошибка: пути подписок совпадают: ${SUB_PATH}"
-  echo "Поменяй SUB_TOKEN2 или SUB_PREFIX2."
+  echo "Поменяй SUB_TOKEN2."
   exit 1
 fi
 
