@@ -130,9 +130,13 @@ if [[ -n "${PUBLIC_IP:-}" && -n "${DNS_IP:-}" && "$PUBLIC_IP" != "$DNS_IP" ]]; t
 fi
 
 if port_in_use 80; then
-  echo "Ошибка: TCP-порт 80 занят. Освободи его для certbot --standalone и запусти скрипт снова."
-  ss -ltnp | grep ':80' || true
-  exit 1
+  if systemctl is-active --quiet nginx 2>/dev/null; then
+    echo "Порт 80 занят nginx — certbot остановит его на время выпуска и вернёт обратно."
+  else
+    echo "Ошибка: TCP-порт 80 занят. Освободи его для certbot --standalone и запусти скрипт снова."
+    ss -ltnp | grep ':80' || true
+    exit 1
+  fi
 fi
 
 EU_PORT=$(random_port)
@@ -151,8 +155,33 @@ systemctl stop sing-box 2>/dev/null || true
 
 install_singbox
 
+# Хук обновления: после продления сертификата раскладываем его в sing-box
+# и перезапускаем VPN. Без этого sing-box продолжит жить со старой копией.
+cat > /usr/local/bin/singbox-cert-deploy.sh <<EOF_HOOK
+#!/bin/sh
+set -e
+SRC="/etc/letsencrypt/live/${DOMAIN}"
+DST="/etc/sing-box/certs/${DOMAIN}"
+mkdir -p "\$DST"
+cp -f "\$SRC/fullchain.pem" "\$DST/fullchain.pem"
+cp -f "\$SRC/privkey.pem" "\$DST/privkey.pem"
+chmod 644 "\$DST/fullchain.pem"
+if getent group sing-box >/dev/null 2>&1; then
+    chgrp -R sing-box "\$DST" || true
+    chmod 640 "\$DST/privkey.pem"
+else
+    chmod 600 "\$DST/privkey.pem"
+fi
+systemctl restart sing-box
+EOF_HOOK
+chmod +x /usr/local/bin/singbox-cert-deploy.sh
+
 # Let's Encrypt
+# pre/post-хуки освобождают порт 80 на время проверки, если на нём стоит nginx.
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
+CERTBOT_ARGS+=(--pre-hook "systemctl stop nginx 2>/dev/null || true")
+CERTBOT_ARGS+=(--post-hook "systemctl start nginx 2>/dev/null || true")
+CERTBOT_ARGS+=(--deploy-hook "/usr/local/bin/singbox-cert-deploy.sh")
 if [[ -n "$EMAIL" ]]; then
   CERTBOT_ARGS+=(-m "$EMAIL")
 else
@@ -247,6 +276,9 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$EU_PORT"/udp
+# 80 нужен certbot для продления сертификата, 443 — для сайтов за nginx.
+ufw allow 80/tcp
+ufw allow 443/tcp
 ufw --force enable
 
 PASS_ENC=$(urlencode "$EU_PASS")
