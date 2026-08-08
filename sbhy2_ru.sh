@@ -36,6 +36,11 @@ if [[ "$SUB_PATH" == "$SUB_PATH2" ]]; then
   exit 1
 fi
 
+# Порт локального nginx, на который REALITY проксирует чужие хендшейки.
+# Наружу не торчит: 443 занимает sing-box, nginx слушает только 127.0.0.1.
+NGINX_LOCAL_PORT="${NGINX_LOCAL_PORT:-8443}"
+VLESS_PORT="${VLESS_PORT:-443}"
+
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
 valid_domain() { [[ "$1" =~ ^[A-Za-z0-9.-]+\.[A-Za-z]{2,}$ ]]; }
@@ -55,6 +60,18 @@ get_public_ip() {
 port_in_use() {
   local p="$1"
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"
+}
+
+# Фильтруем средствами самого ss: у "ss -tln" нет колонки Netid, а у
+# "ss -tuln" она есть, поэтому разбор по номеру колонки врёт через раз.
+tcp_port_in_use() {
+  local p="$1"
+  [[ -n "$(ss -H -tln "sport = :${p}" 2>/dev/null)" ]]
+}
+
+udp_port_in_use() {
+  local p="$1"
+  [[ -n "$(ss -H -uln "sport = :${p}" 2>/dev/null)" ]]
 }
 
 random_port() {
@@ -170,6 +187,44 @@ for k, v in {
 PY
 }
 
+parse_eu_vless_link() {
+  EU_VLESS_INPUT="$1" python3 - <<'PY'
+import os, sys, shlex
+from urllib.parse import urlparse, parse_qs, unquote
+
+url = os.environ.get("EU_VLESS_INPUT", "").strip()
+u = urlparse(url)
+if u.scheme != "vless":
+    print("Ссылка должна начинаться с vless://", file=sys.stderr)
+    sys.exit(1)
+if not u.hostname or not u.username:
+    print("В ссылке нет host или uuid", file=sys.stderr)
+    sys.exit(1)
+
+qs = parse_qs(u.query)
+if qs.get("security", [""])[0] != "reality":
+    print("Ожидалась ссылка с security=reality", file=sys.stderr)
+    sys.exit(1)
+
+pbk = qs.get("pbk", [""])[0]
+if not pbk:
+    print("В ссылке нет pbk (публичный ключ REALITY)", file=sys.stderr)
+    sys.exit(1)
+
+for k, v in {
+    "EU_V_HOST": u.hostname,
+    "EU_V_PORT": str(u.port or 443),
+    "EU_V_UUID": unquote(u.username),
+    "EU_V_SNI":  qs.get("sni", [u.hostname])[0],
+    "EU_V_PBK":  pbk,
+    "EU_V_SID":  qs.get("sid", [""])[0],
+    "EU_V_FLOW": qs.get("flow", ["xtls-rprx-vision"])[0],
+    "EU_V_FP":   qs.get("fp", ["firefox"])[0],
+}.items():
+    print(f"{k}={shlex.quote(v)}")
+PY
+}
+
 write_client_config() {
   local out="$1"
   install -d -m 755 "$(dirname "$out")"
@@ -243,10 +298,16 @@ write_link_config() {
   local out="$1"
   install -d -m 755 "$(dirname "$out")"
 
+  local payload="$RU_LINK"
+  if [[ -n "${RU_VLESS_LINK:-}" ]]; then
+    payload="${RU_LINK}
+${RU_VLESS_LINK}"
+  fi
+
   if [[ "$SUB2_BASE64" == "1" ]]; then
-    printf '%s\n' "$RU_LINK" | base64 -w0 > "$out"
+    printf '%s\n' "$payload" | base64 -w0 > "$out"
   else
-    printf '%s\n' "$RU_LINK" > "$out"
+    printf '%s\n' "$payload" > "$out"
   fi
 
   chmod 644 "$out"
@@ -259,6 +320,15 @@ write_link_config() {
 setup_nginx() {
   rm -f /etc/nginx/sites-enabled/default
 
+  # Когда включён VLESS, 443 занимает sing-box, а nginx уезжает на локальный
+  # порт и работает двумя способами сразу: как dest для REALITY-хендшейков
+  # и как раздатчик подписок (REALITY прозрачно пробрасывает на него
+  # всех, кто пришёл без валидного ключа — то есть обычные браузеры).
+  local ssl_listen="listen 443 ssl;"
+  if [[ "$VLESS_ENABLED" == "1" ]]; then
+    ssl_listen="listen 127.0.0.1:${NGINX_LOCAL_PORT} ssl;"
+  fi
+
   cat > /etc/nginx/sites-available/subscription.conf <<EOF_NGINX
 server {
     listen 80;
@@ -267,7 +337,7 @@ server {
 }
 
 server {
-    listen 443 ssl;
+    ${ssl_listen}
     server_name ${RU_DOMAIN};
 
     ssl_certificate     /etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem;
@@ -341,7 +411,7 @@ EOF_POST
            /etc/letsencrypt/renewal-hooks/post/99-start-nginx.sh
 }
 
-echo "=== Установка RU Hysteria2 entry-сервера на sing-box с выходом через EU ==="
+echo "=== Установка RU-входа (hysteria2 + vless-reality) на sing-box с выходом через EU ==="
 read -rp "Введите домен RU-сервера: " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
 if ! valid_domain "$RU_DOMAIN"; then
@@ -354,8 +424,25 @@ read -rp "Вставь ссылку EU-сервера hysteria2://...: " EU_LINK
 
 eval "$(parse_eu_link "$EU_LINK")"
 
+echo
+echo "Теперь VLESS-хоп до того же EU-сервера."
+echo "Оставь пустым, если нужен только hysteria2 — тогда VLESS не поднимется вовсе."
+read -rp "Вставь ссылку EU-сервера vless://...: " EU_VLESS_LINK
+
+VLESS_ENABLED=0
+if [[ -n "${EU_VLESS_LINK// /}" ]]; then
+  eval "$(parse_eu_vless_link "$EU_VLESS_LINK")"
+  VLESS_ENABLED=1
+fi
+
 apt update
 apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban nginx
+
+# Логов быть не должно: sing-box молчит на level=panic, nginx глушим тут.
+# access_log писал бы IP всех, кто постучался, включая сканеры на REALITY.
+sed -i -e 's#^[[:space:]]*access_log .*#access_log off;#' \
+       -e 's#^[[:space:]]*error_log .*#error_log /dev/null crit;#' \
+       /etc/nginx/nginx.conf
 
 PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$RU_DOMAIN" | awk '{print $1; exit}' || true)
@@ -381,6 +468,7 @@ RU_PASS=$(random_pass)
 RU_OBFS_PASS=$(random_pass)
 
 ufw allow 80/tcp 2>/dev/null || true
+ufw allow 443/tcp 2>/dev/null || true
 open_udp_port "$RU_PORT"
 
 systemctl stop hysteria-server.service 2>/dev/null || true
@@ -390,6 +478,21 @@ systemctl disable hysteria-client-eu.service 2>/dev/null || true
 
 install_singbox
 systemctl stop sing-box 2>/dev/null || true
+
+# Свои ключи REALITY для входа "клиент -> RU". С EU-нодой они не общие:
+# там своя пара, здесь своя.
+if [[ "$VLESS_ENABLED" == "1" ]]; then
+  RU_REALITY_KEYPAIR=$(sing-box generate reality-keypair)
+  RU_REALITY_PRIVATE=$(echo "$RU_REALITY_KEYPAIR" | awk '/PrivateKey/ {print $2}')
+  RU_REALITY_PUBLIC=$(echo "$RU_REALITY_KEYPAIR" | awk '/PublicKey/ {print $2}')
+  RU_VLESS_UUID=$(sing-box generate uuid)
+  RU_VLESS_SID=$(sing-box generate rand 8 --hex)
+
+  if [[ -z "$RU_REALITY_PRIVATE" || -z "$RU_REALITY_PUBLIC" || -z "$RU_VLESS_UUID" || -z "$RU_VLESS_SID" ]]; then
+    echo "Ошибка: не удалось сгенерировать параметры REALITY."
+    exit 1
+  fi
+fi
 
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
 if [[ -n "$EMAIL" ]]; then
@@ -407,6 +510,76 @@ if [[ -n "${EU_OBFS_PASS:-}" ]]; then
         \"password\": \"${EU_OBFS_PASS}\"
       },
 "
+fi
+
+# Блоки VLESS вклеиваются в конфиг с ведущей запятой, чтобы при
+# VLESS_ENABLED=0 остался ровно прежний hysteria-only конфиг.
+VLESS_IN_BLOCK=""
+VLESS_OUT_BLOCK=""
+VLESS_RULE_BLOCK=""
+if [[ "$VLESS_ENABLED" == "1" ]]; then
+  VLESS_IN_BLOCK=",
+    {
+      \"type\": \"vless\",
+      \"tag\": \"vless-in\",
+      \"listen\": \"::\",
+      \"listen_port\": ${VLESS_PORT},
+      \"users\": [
+        {
+          \"name\": \"user1\",
+          \"uuid\": \"${RU_VLESS_UUID}\",
+          \"flow\": \"xtls-rprx-vision\"
+        }
+      ],
+      \"tls\": {
+        \"enabled\": true,
+        \"server_name\": \"${RU_DOMAIN}\",
+        \"reality\": {
+          \"enabled\": true,
+          \"handshake\": {
+            \"server\": \"127.0.0.1\",
+            \"server_port\": ${NGINX_LOCAL_PORT}
+          },
+          \"private_key\": \"${RU_REALITY_PRIVATE}\",
+          \"short_id\": [
+            \"${RU_VLESS_SID}\"
+          ]
+        }
+      }
+    }"
+
+  VLESS_OUT_BLOCK=",
+    {
+      \"type\": \"vless\",
+      \"tag\": \"eu_exit_vless\",
+      \"server\": \"${EU_V_HOST}\",
+      \"server_port\": ${EU_V_PORT},
+      \"uuid\": \"${EU_V_UUID}\",
+      \"flow\": \"${EU_V_FLOW}\",
+      \"packet_encoding\": \"xudp\",
+      \"tls\": {
+        \"enabled\": true,
+        \"server_name\": \"${EU_V_SNI}\",
+        \"utls\": {
+          \"enabled\": true,
+          \"fingerprint\": \"${EU_V_FP}\"
+        },
+        \"reality\": {
+          \"enabled\": true,
+          \"public_key\": \"${EU_V_PBK}\",
+          \"short_id\": \"${EU_V_SID}\"
+        }
+      }
+    }"
+
+  # VLESS-клиенты уходят на EU своим VLESS-хопом, hysteria — своим.
+  VLESS_RULE_BLOCK=",
+      {
+        \"inbound\": [
+          \"vless-in\"
+        ],
+        \"outbound\": \"eu_exit_vless\"
+      }"
 fi
 
 mkdir -p /etc/sing-box
@@ -442,7 +615,7 @@ cat > /etc/sing-box/config.json <<EOF_CONF
         "url": "https://www.bing.com",
         "rewrite_host": true
       }
-    }
+    }${VLESS_IN_BLOCK}
   ],
   "outbounds": [
     {
@@ -460,7 +633,7 @@ ${EU_OBFS_BLOCK}      "tls": {
         "server_name": "${EU_SNI}",
         "insecure": ${EU_INSECURE}
       }
-    }
+    }${VLESS_OUT_BLOCK}
   ],
   "route": {
     "rules": [
@@ -469,7 +642,7 @@ ${EU_OBFS_BLOCK}      "tls": {
           ".ru"
         ],
         "outbound": "ru_direct"
-      }
+      }${VLESS_RULE_BLOCK}
     ],
     "final": "eu_exit"
   }
@@ -487,17 +660,41 @@ if ! systemctl is-active --quiet sing-box; then
   journalctl --no-pager -e -u sing-box
   exit 1
 fi
+
+if ! udp_port_in_use "$RU_PORT"; then
+  echo "Ошибка: sing-box не слушает ${RU_PORT}/udp (hysteria2)."
+  exit 1
+fi
+if [[ "$VLESS_ENABLED" == "1" ]] && ! tcp_port_in_use "$VLESS_PORT"; then
+  echo "Ошибка: sing-box не слушает ${VLESS_PORT}/tcp (vless-reality)."
+  exit 1
+fi
+
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
 OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
 RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2"
 
+RU_VLESS_LINK=""
+if [[ "$VLESS_ENABLED" == "1" ]]; then
+  RU_VLESS_LINK="vless://${RU_VLESS_UUID}@${RU_DOMAIN}:${VLESS_PORT}?type=tcp&security=reality&encryption=none&flow=xtls-rprx-vision&sni=${RU_DOMAIN}&fp=firefox&pbk=${RU_REALITY_PUBLIC}&sid=${RU_VLESS_SID}#vless"
+fi
+
 write_client_config "${SUB_FILE}"   # sing-box JSON
-write_link_config   "${SUB_FILE2}"  # hysteria2://...
+write_link_config   "${SUB_FILE2}"  # hysteria2:// + vless://
 setup_nginx
 setup_renewal_hooks
 SUB_URL="https://${RU_DOMAIN}${SUB_PATH}"
 SUB_URL2="https://${RU_DOMAIN}${SUB_PATH2}"
+
+# Подписки отдаёт nginx, спрятанный за REALITY. Проверяем, что снаружи
+# они реально открываются — иначе клиенту неоткуда взять конфиг.
+sleep 1
+SUB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$SUB_URL2" || echo "000")
+if [[ "$SUB_CODE" != "200" ]]; then
+  echo "ВНИМАНИЕ: подписка ${SUB_URL2} отдала код ${SUB_CODE}, а не 200."
+  echo "Ссылки ниже рабочие, но подписку по URL клиент не получит — проверь nginx и REALITY handshake."
+fi
 
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
@@ -527,8 +724,8 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
-ufw allow 80/tcp    
-ufw allow 443/tcp    
+ufw allow 80/tcp
+ufw allow 443/tcp
 ufw --force enable
 
 cat > /etc/sysctl.conf <<'EOF'
@@ -547,9 +744,17 @@ systemctl is-active --quiet nginx || systemctl restart nginx
 echo
 echo "=== Готово ==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
+if [[ "$VLESS_ENABLED" == "1" ]]; then
+  echo "VLESS REALITY: ${VLESS_PORT}/tcp, dest 127.0.0.1:${NGINX_LOCAL_PORT} (локальный nginx с этим же сертом)"
+fi
 echo
-echo "--- Ссылка ---"
+echo "--- Ссылка hysteria2 ---"
 echo "$RU_LINK"
+if [[ "$VLESS_ENABLED" == "1" ]]; then
+  echo
+  echo "--- Ссылка vless-reality ---"
+  echo "$RU_VLESS_LINK"
+fi
 echo
 echo "--- Подписка sing-box ---"
 echo "$SUB_URL"

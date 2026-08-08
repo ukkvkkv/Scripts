@@ -6,6 +6,13 @@ if [[ ${EUID} -ne 0 ]]; then
   exit 1
 fi
 
+# VLESS REALITY стоит на 443, SNI — всегда домен этого сервера.
+# Настоящие TLS-хендшейки уходят на локальный nginx с сертом того же домена:
+# наружу он не торчит, а REALITY прозрачно пробрасывает на него всех, кто
+# пришёл без валидного ключа, — сканер видит обычный сайт с валидным сертом.
+VLESS_PORT=443
+NGINX_LOCAL_PORT="${NGINX_LOCAL_PORT:-8443}"
+
 cat > /etc/sysctl.conf <<'EOF'
 net.ipv6.conf.all.disable_ipv6 = 1
 net.ipv6.conf.default.disable_ipv6 = 1
@@ -37,6 +44,18 @@ port_in_use() {
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"
 }
 
+# Фильтруем средствами самого ss: у "ss -tln" нет колонки Netid, а у
+# "ss -tuln" она есть, поэтому разбор по номеру колонки врёт через раз.
+tcp_port_in_use() {
+  local p="$1"
+  [[ -n "$(ss -H -tln "sport = :${p}" 2>/dev/null)" ]]
+}
+
+udp_port_in_use() {
+  local p="$1"
+  [[ -n "$(ss -H -uln "sport = :${p}" 2>/dev/null)" ]]
+}
+
 random_port() {
   local p
   for _ in {1..100}; do
@@ -66,6 +85,16 @@ open_udp_port() {
   if need_cmd iptables; then
     iptables -C INPUT -p udp --dport "$p" -j ACCEPT 2>/dev/null || iptables -I INPUT -p udp --dport "$p" -j ACCEPT || true
     iptables -C OUTPUT -p udp --sport "$p" -j ACCEPT 2>/dev/null || iptables -I OUTPUT -p udp --sport "$p" -j ACCEPT || true
+  fi
+}
+
+open_tcp_port() {
+  local p="$1"
+  if need_cmd ufw; then
+    ufw allow "${p}/tcp" 2>/dev/null || true
+  fi
+  if need_cmd iptables; then
+    iptables -C INPUT -p tcp --dport "$p" -j ACCEPT 2>/dev/null || iptables -I INPUT -p tcp --dport "$p" -j ACCEPT || true
   fi
 }
 
@@ -115,7 +144,13 @@ fi
 read -rp "Email для Let's Encrypt (можно оставить пустым): " EMAIL
 
 apt update
-apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban
+apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban nginx
+
+# Логов быть не должно: sing-box молчит на level=panic, nginx глушим тут.
+# access_log писал бы IP всех, кто постучался, включая сканеры на REALITY.
+sed -i -e 's#^[[:space:]]*access_log .*#access_log off;#' \
+       -e 's#^[[:space:]]*error_log .*#error_log /dev/null crit;#' \
+       /etc/nginx/nginx.conf
 
 PUBLIC_IP=$(get_public_ip)
 DNS_IP=$(getent ahostsv4 "$DOMAIN" | awk '{print $1; exit}' || true)
@@ -143,17 +178,46 @@ EU_PORT=$(random_port)
 EU_PASS=$(random_pass)
 EU_OBFS_PASS=$(random_pass)
 
-ufw allow 80/tcp 2>/dev/null || true
-open_udp_port "$EU_PORT"
-
-# Останавливаем старые сервисы
+# Останавливаем старые сервисы. Обязательно ДО проверки занятости 443:
+# иначе при повторном запуске скрипт увидит на 443 свой же sing-box
+# с прошлого раза и решит, что порт занят чужим сайтом.
 systemctl stop hysteria-server.service 2>/dev/null || true
 systemctl disable hysteria-server.service 2>/dev/null || true
 systemctl stop hysteria-client-eu.service 2>/dev/null || true
 systemctl disable hysteria-client-eu.service 2>/dev/null || true
 systemctl stop sing-box 2>/dev/null || true
 
+# 443 занимает REALITY, поэтому чужой сайт на нём — это конфликт, который
+# скрипт молча разрулить не может. Останавливаемся и говорим, что делать.
+if tcp_port_in_use 443; then
+  echo "Ошибка: 443/tcp уже занят — его должен слушать sing-box."
+  ss -ltnp | grep ':443' || true
+  echo
+  echo "Если это твой сайт: перевесь его на 127.0.0.1:${NGINX_LOCAL_PORT}"
+  echo "(в nginx заменить 'listen 443 ssl;' на 'listen 127.0.0.1:${NGINX_LOCAL_PORT} ssl;')"
+  echo "и запусти скрипт снова. Сайт продолжит открываться по https://${DOMAIN}/ —"
+  echo "REALITY прозрачно пробросит на него всех, кто пришёл без ключа."
+  exit 1
+fi
+
+ufw allow 80/tcp 2>/dev/null || true
+open_udp_port "$EU_PORT"
+open_tcp_port "$VLESS_PORT"
+
 install_singbox
+
+# Ключи REALITY и учётка VLESS. Приватный ключ остаётся здесь,
+# публичный уезжает в ссылку для RU-ноды.
+REALITY_KEYPAIR=$(sing-box generate reality-keypair)
+REALITY_PRIVATE=$(echo "$REALITY_KEYPAIR" | awk '/PrivateKey/ {print $2}')
+REALITY_PUBLIC=$(echo "$REALITY_KEYPAIR" | awk '/PublicKey/ {print $2}')
+VLESS_UUID=$(sing-box generate uuid)
+VLESS_SID=$(sing-box generate rand 8 --hex)
+
+if [[ -z "$REALITY_PRIVATE" || -z "$REALITY_PUBLIC" || -z "$VLESS_UUID" || -z "$VLESS_SID" ]]; then
+  echo "Ошибка: не удалось сгенерировать параметры REALITY."
+  exit 1
+fi
 
 # Хук обновления: после продления сертификата раскладываем его в sing-box
 # и перезапускаем VPN. Без этого sing-box продолжит жить со старой копией.
@@ -191,7 +255,48 @@ certbot "${CERTBOT_ARGS[@]}"
 
 CERT_DIR=$(prepare_certs "$DOMAIN")
 
-# Конфиг sing-box
+# Локальный сайт-заглушка на 127.0.0.1:NGINX_LOCAL_PORT — это dest для REALITY.
+# Если на этом порту уже что-то своё (перевешенный сайт) — не трогаем.
+if tcp_port_in_use "$NGINX_LOCAL_PORT"; then
+  echo "На 127.0.0.1:${NGINX_LOCAL_PORT} уже что-то слушает — беру это как dest, nginx не трогаю."
+else
+  rm -f /etc/nginx/sites-enabled/default
+  install -d -m 755 /var/www/html
+  cat > /etc/nginx/sites-available/reality-dest.conf <<EOF_NGINX
+server {
+    listen 127.0.0.1:${NGINX_LOCAL_PORT} ssl;
+    server_name ${DOMAIN};
+
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:5m;
+
+    server_tokens off;
+    root /var/www/html;
+    index index.html;
+}
+EOF_NGINX
+  ln -sf /etc/nginx/sites-available/reality-dest.conf \
+         /etc/nginx/sites-enabled/reality-dest.conf
+  nginx -t
+  systemctl enable nginx
+  systemctl restart nginx
+fi
+
+# REALITY без живого dest не установит ни одного соединения, поэтому
+# убеждаемся, что оттуда реально приходит TLS с сертом нашего домена.
+sleep 1
+DEST_SUBJECT=$(echo | timeout 10 openssl s_client -connect "127.0.0.1:${NGINX_LOCAL_PORT}" \
+  -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -subject 2>/dev/null || true)
+if [[ -z "$DEST_SUBJECT" ]]; then
+  echo "Ошибка: dest 127.0.0.1:${NGINX_LOCAL_PORT} не отвечает валидным TLS с SNI ${DOMAIN}."
+  echo "REALITY без рабочего dest не поднимет ни одного соединения."
+  exit 1
+fi
+echo "dest живой, сертификат: ${DEST_SUBJECT}"
+
+# Конфиг sing-box: hysteria2 + vless-reality, оба выходят через direct
 mkdir -p /etc/sing-box
 cat > /etc/sing-box/config.json <<EOF_CONF
 {
@@ -225,6 +330,34 @@ cat > /etc/sing-box/config.json <<EOF_CONF
         "url": "https://www.bing.com",
         "rewrite_host": true
       }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "::",
+      "listen_port": ${VLESS_PORT},
+      "users": [
+        {
+          "name": "ru-hop",
+          "uuid": "${VLESS_UUID}",
+          "flow": "xtls-rprx-vision"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "${DOMAIN}",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "127.0.0.1",
+            "server_port": ${NGINX_LOCAL_PORT}
+          },
+          "private_key": "${REALITY_PRIVATE}",
+          "short_id": [
+            "${VLESS_SID}"
+          ]
+        }
+      }
     }
   ],
   "outbounds": [
@@ -245,6 +378,15 @@ sleep 2
 if ! systemctl is-active --quiet sing-box; then
   echo "Ошибка: sing-box не запустился. Логи:"
   journalctl --no-pager -e -u sing-box
+  exit 1
+fi
+
+if ! udp_port_in_use "$EU_PORT"; then
+  echo "Ошибка: sing-box не слушает ${EU_PORT}/udp (hysteria2)."
+  exit 1
+fi
+if ! tcp_port_in_use "$VLESS_PORT"; then
+  echo "Ошибка: sing-box не слушает ${VLESS_PORT}/tcp (vless-reality)."
   exit 1
 fi
 
@@ -276,18 +418,24 @@ ufw default deny incoming
 ufw default allow outgoing
 ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$EU_PORT"/udp
-# 80 нужен certbot для продления сертификата, 443 — для сайтов за nginx.
+# 443 — это vless-reality (VLESS_PORT), 80 нужен certbot для продления серта.
+ufw allow "$VLESS_PORT"/tcp
 ufw allow 80/tcp
-ufw allow 443/tcp
 ufw --force enable
 
 PASS_ENC=$(urlencode "$EU_PASS")
 DOMAIN_ENC=$(urlencode "$DOMAIN")
 OBFS_PASS_ENC=$(urlencode "$EU_OBFS_PASS")
 EU_LINK="hysteria2://${PASS_ENC}@${DOMAIN}:${EU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hy2sb"
+EU_VLESS_LINK="vless://${VLESS_UUID}@${DOMAIN}:${VLESS_PORT}?type=tcp&security=reality&encryption=none&flow=xtls-rprx-vision&sni=${DOMAIN}&fp=firefox&pbk=${REALITY_PUBLIC}&sid=${VLESS_SID}#hop-eu"
 
 echo
-echo "=== hysteria2 сервер готов ==="
+echo "=== EU-сервер готов: hysteria2 + vless-reality ==="
 echo "Новый SSH порт: $NEW_SSH_PORT"
-echo 
+echo "VLESS REALITY: ${VLESS_PORT}/tcp, SNI ${DOMAIN}, dest 127.0.0.1:${NGINX_LOCAL_PORT}"
+echo
+echo "--- Обе ссылки скормить RU-скрипту ---"
 echo "$EU_LINK"
+echo
+echo "$EU_VLESS_LINK"
+echo
