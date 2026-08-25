@@ -38,6 +38,10 @@ fi
 
 # Порт локального nginx, на который REALITY проксирует чужие хендшейки.
 # Наружу не торчит: 443 занимает sing-box, nginx слушает только 127.0.0.1.
+#
+# Это порты входа "клиент -> RU" и от EU-стороны они не зависят. Если на
+# EU-ноде стоит Telegram WEB proxy, её REALITY уехал с 443 на 8443, но сюда
+# это не протекает: порт EU-хопа берётся из vless://-ссылки целиком.
 NGINX_LOCAL_PORT="${NGINX_LOCAL_PORT:-8443}"
 VLESS_PORT="${VLESS_PORT:-443}"
 
@@ -426,6 +430,8 @@ eval "$(parse_eu_link "$EU_LINK")"
 
 echo
 echo "Теперь VLESS-хоп до того же EU-сервера."
+echo "Порт бери из ссылки как есть: если на EU-ноде стоит Telegram WEB proxy,"
+echo "443 там занят им, а REALITY слушает 8443."
 echo "Оставь пустым, если нужен только hysteria2 — тогда VLESS не поднимется вовсе."
 read -rp "Вставь ссылку EU-сервера vless://...: " EU_VLESS_LINK
 
@@ -433,6 +439,7 @@ VLESS_ENABLED=0
 if [[ -n "${EU_VLESS_LINK// /}" ]]; then
   eval "$(parse_eu_vless_link "$EU_VLESS_LINK")"
   VLESS_ENABLED=1
+  echo "VLESS-хоп: ${EU_V_HOST}:${EU_V_PORT} (SNI ${EU_V_SNI})"
 fi
 
 apt update
