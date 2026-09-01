@@ -163,7 +163,10 @@ install_amneziawg() {
     return 0
   fi
   echo "Устанавливаю AmneziaWG..."
-  apt install -y software-properties-common linux-headers-generic
+  # Заголовки именно работающего ядра: linux-headers-generic — метапакет, он тянет
+  # самое свежее ядро из репозитория, и на отстающем образе VPS DKMS соберёт модуль
+  # не под то ядро, а modprobe ниже упадёт.
+  apt install -y software-properties-common "linux-headers-$(uname -r)" linux-headers-generic
   add-apt-repository -y ppa:amnezia/ppa
   apt update
   apt install -y amneziawg-dkms amneziawg-tools
