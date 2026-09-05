@@ -21,8 +21,7 @@ fi
 SUB_PATH="/${SUB_TOKEN}"
 SUB_FILE="${SUB_DIR}${SUB_PATH}"
 SITE_DIR="${SITE_DIR:-/var/www/html}"
-NGINX_LOCAL_PORT="${NGINX_LOCAL_PORT:-8443}"
-VLESS_PORT="${VLESS_PORT:-443}"
+RU_PORT=443
 
 need_cmd() { command -v "$1" >/dev/null 2>&1; }
 
@@ -44,27 +43,9 @@ port_in_use() {
   local p="$1"
   ss -H -tuln 2>/dev/null | awk '{print $5}' | grep -Eq ":${p}$"
 }
-tcp_port_in_use() {
-  local p="$1"
-  [[ -n "$(ss -H -tln "sport = :${p}" 2>/dev/null)" ]]
-}
-
 udp_port_in_use() {
   local p="$1"
   [[ -n "$(ss -H -uln "sport = :${p}" 2>/dev/null)" ]]
-}
-
-random_port() {
-  local p
-  for _ in {1..100}; do
-    p=$(shuf -i 20000-60000 -n 1)
-    if ! port_in_use "$p"; then
-      echo "$p"
-      return 0
-    fi
-  done
-  echo "Не удалось подобрать свободный порт" >&2
-  exit 1
 }
 
 random_pass() {
@@ -167,58 +148,14 @@ for k, v in {
 PY
 }
 
-parse_eu_vless_link() {
-  EU_VLESS_INPUT="$1" python3 - <<'PY'
-import os, sys, shlex
-from urllib.parse import urlparse, parse_qs, unquote
-
-url = os.environ.get("EU_VLESS_INPUT", "").strip()
-u = urlparse(url)
-if u.scheme != "vless":
-    print("Ссылка должна начинаться с vless://", file=sys.stderr)
-    sys.exit(1)
-if not u.hostname or not u.username:
-    print("В ссылке нет host или uuid", file=sys.stderr)
-    sys.exit(1)
-
-qs = parse_qs(u.query)
-if qs.get("security", [""])[0] != "reality":
-    print("Ожидалась ссылка с security=reality", file=sys.stderr)
-    sys.exit(1)
-
-pbk = qs.get("pbk", [""])[0]
-if not pbk:
-    print("В ссылке нет pbk (публичный ключ REALITY)", file=sys.stderr)
-    sys.exit(1)
-
-for k, v in {
-    "EU_V_HOST": u.hostname,
-    "EU_V_PORT": str(u.port or 443),
-    "EU_V_UUID": unquote(u.username),
-    "EU_V_SNI":  qs.get("sni", [u.hostname])[0],
-    "EU_V_PBK":  pbk,
-    "EU_V_SID":  qs.get("sid", [""])[0],
-    "EU_V_FLOW": qs.get("flow", ["xtls-rprx-vision"])[0],
-    "EU_V_FP":   qs.get("fp", ["firefox"])[0],
-}.items():
-    print(f"{k}={shlex.quote(v)}")
-PY
-}
-
 write_link_config() {
   local out="$1"
   install -d -m 755 "$(dirname "$out")"
 
-  local payload="$RU_LINK"
-  if [[ -n "${RU_VLESS_LINK:-}" ]]; then
-    payload="${RU_LINK}
-${RU_VLESS_LINK}"
-  fi
-
   if [[ "$SUB_BASE64" == "1" ]]; then
-    printf '%s\n' "$payload" | base64 -w0 > "$out"
+    printf '%s\n' "$RU_LINK" | base64 -w0 > "$out"
   else
-    printf '%s\n' "$payload" > "$out"
+    printf '%s\n' "$RU_LINK" > "$out"
   fi
 
   chmod 644 "$out"
@@ -268,13 +205,9 @@ EOF_SITE
 setup_nginx() {
   rm -f /etc/nginx/sites-enabled/default
   rm -f /etc/nginx/sites-enabled/subscription.conf /etc/nginx/sites-available/subscription.conf
-  local ssl_listen="listen 443 ssl;"
-  if [[ "$VLESS_ENABLED" == "1" ]]; then
-    ssl_listen="listen 127.0.0.1:${NGINX_LOCAL_PORT} ssl;"
-  fi
-
+  rm -f /etc/nginx/sites-enabled/reality-dest.conf /etc/nginx/sites-available/reality-dest.conf
   make_site "$SITE_DIR"
-  cat > /etc/nginx/sites-available/reality-dest.conf <<EOF_NGINX
+  cat > /etc/nginx/sites-available/site.conf <<EOF_NGINX
 server {
     listen 80;
     server_name ${RU_DOMAIN};
@@ -282,7 +215,7 @@ server {
 }
 
 server {
-    ${ssl_listen}
+    listen 443 ssl;
     server_name ${RU_DOMAIN};
 
     ssl_certificate     /etc/letsencrypt/live/${RU_DOMAIN}/fullchain.pem;
@@ -305,8 +238,8 @@ server {
 }
 EOF_NGINX
 
-  ln -sf /etc/nginx/sites-available/reality-dest.conf \
-         /etc/nginx/sites-enabled/reality-dest.conf
+  ln -sf /etc/nginx/sites-available/site.conf \
+         /etc/nginx/sites-enabled/site.conf
 
   nginx -t
   systemctl enable nginx
@@ -350,523 +283,6 @@ EOF_POST
            /etc/letsencrypt/renewal-hooks/post/99-start-nginx.sh
 }
 
-AWG_PORT="${AWG_PORT:-443}"
-AWG_SUBNET_PREFIX=10.8.0
-AWG_TABLE_HOP=100
-AWG_TABLE_RU=101
-
-install_amneziawg() {
-  if need_cmd awg && modinfo amneziawg >/dev/null 2>&1; then
-    echo "AmneziaWG уже установлен: $(awg --version | head -n 1)"
-    return 0
-  fi
-  echo "Устанавливаю AmneziaWG (модуль собирается через DKMS)..."
-  apt install -y software-properties-common linux-headers-generic
-  add-apt-repository -y ppa:amnezia/ppa
-  apt update
-  apt install -y amneziawg-dkms amneziawg-tools
-  if ! modprobe amneziawg; then
-    echo "Ошибка: модуль amneziawg не загрузился."
-    echo "Обычно это значит, что linux-headers не совпадают с текущим ядром."
-    echo "Проверь: dkms status; uname -r; ls -d /usr/src/linux-headers-*"
-    exit 1
-  fi
-  echo "AmneziaWG: модуль $(modinfo -F version amneziawg), утилиты $(awg --version | head -n 1)"
-}
-gen_awg_params() {
-  AWG_JC=$(shuf -i 3-6 -n 1)
-  AWG_JMIN=$(shuf -i 40-89 -n 1)
-  AWG_JMAX=$(( AWG_JMIN + $(shuf -i 50-250 -n 1) ))
-
-  AWG_S1=$(shuf -i 15-150 -n 1)
-  AWG_S2=$(shuf -i 15-150 -n 1)
-  while [[ $(( AWG_S1 + 56 )) -eq "$AWG_S2" ]]; do AWG_S2=$(shuf -i 15-150 -n 1); done
-  AWG_S3=$(shuf -i 15-55 -n 1)
-  while [[ $(( AWG_S2 + 28 )) -eq "$AWG_S3" ]]; do AWG_S3=$(shuf -i 15-55 -n 1); done
-  AWG_S4=$(shuf -i 15-55 -n 1)
-
-  AWG_H1=$(shuf -i 10-2147483647 -n 1)
-  AWG_H2=$(shuf -i 10-2147483647 -n 1)
-  while [[ "$AWG_H2" == "$AWG_H1" ]]; do AWG_H2=$(shuf -i 10-2147483647 -n 1); done
-  AWG_H3=$(shuf -i 10-2147483647 -n 1)
-  while [[ "$AWG_H3" == "$AWG_H1" || "$AWG_H3" == "$AWG_H2" ]]; do AWG_H3=$(shuf -i 10-2147483647 -n 1); done
-  AWG_H4=$(shuf -i 10-2147483647 -n 1)
-  while [[ "$AWG_H4" == "$AWG_H1" || "$AWG_H4" == "$AWG_H2" || "$AWG_H4" == "$AWG_H3" ]]; do
-    AWG_H4=$(shuf -i 10-2147483647 -n 1)
-  done
-}
-parse_awg_hop() {
-  local raw="${1#AWGHOP1:}" decoded line k v
-  decoded=$(printf '%s' "$raw" | tr -d ' \t\n\r' | base64 -d 2>/dev/null || true)
-  if [[ -z "$decoded" ]]; then
-    echo "Ошибка: hop-строку не удалось разобрать. Нужна строка вида AWGHOP1:<base64>" >&2
-    exit 1
-  fi
-  while IFS= read -r line; do
-    [[ -n "$line" ]] || continue
-    k="${line%%=*}"
-    v="${line#*=}"
-    case "$k" in
-      ENDPOINT)   HOP_ENDPOINT="$v" ;;
-      SERVER_PUB) HOP_SERVER_PUB="$v" ;;
-      HPK)        HOP_HPK="$v" ;;
-      JC)         HOP_JC="$v" ;;
-      JMIN)       HOP_JMIN="$v" ;;
-      JMAX)       HOP_JMAX="$v" ;;
-      S1)         HOP_S1="$v" ;;
-      S2)         HOP_S2="$v" ;;
-      S3)         HOP_S3="$v" ;;
-      S4)         HOP_S4="$v" ;;
-      H1)         HOP_H1="$v" ;;
-      H2)         HOP_H2="$v" ;;
-      H3)         HOP_H3="$v" ;;
-      H4)         HOP_H4="$v" ;;
-      HOP_PRIV)   HOP_PRIV="$v" ;;
-      HOP_IP)     HOP_IP="$v" ;;
-    esac
-  done <<< "$decoded"
-
-  local var
-  for var in HOP_ENDPOINT HOP_SERVER_PUB HOP_HPK HOP_PRIV HOP_IP \
-             HOP_JC HOP_JMIN HOP_JMAX HOP_S1 HOP_S2 HOP_S3 HOP_S4 \
-             HOP_H1 HOP_H2 HOP_H3 HOP_H4; do
-    if [[ -z "${!var:-}" ]]; then
-      echo "Ошибка: в hop-строке нет поля ${var#HOP_}." >&2
-      exit 1
-    fi
-  done
-}
-
-setup_awg_entry() {
-  local wan
-  wan=$(ip -4 route show default | awk '{for (i = 1; i <= NF; i++) if ($i == "dev") { print $(i + 1); exit }}')
-  [[ -n "$wan" ]] || { echo "Ошибка: не удалось определить внешний интерфейс."; exit 1; }
-
-  if udp_port_in_use "$AWG_PORT"; then
-    echo "Ошибка: ${AWG_PORT}/udp уже занят — его должен слушать AmneziaWG."
-    ss -lunp | grep ":${AWG_PORT}" || true
-    exit 1
-  fi
-
-  install_amneziawg
-  gen_awg_params
-  sysctl -qw net.ipv4.ip_forward=1
-  install -d -m 700 /etc/amnezia/amneziawg
-  local old_umask; old_umask=$(umask); umask 077
-  cat > /etc/amnezia/amneziawg/awg1.conf <<EOF_AWG1
-[Interface]
-PrivateKey = ${HOP_PRIV}
-Address = ${HOP_IP}/32
-MTU = 1420
-Table = off
-HeaderProtectionKey = ${HOP_HPK}
-Jc = ${HOP_JC}
-Jmin = ${HOP_JMIN}
-Jmax = ${HOP_JMAX}
-S1 = ${HOP_S1}
-S2 = ${HOP_S2}
-S3 = ${HOP_S3}
-S4 = ${HOP_S4}
-H1 = ${HOP_H1}
-H2 = ${HOP_H2}
-H3 = ${HOP_H3}
-H4 = ${HOP_H4}
-PostUp = ip rule add from ${AWG_SUBNET_PREFIX}.0/24 lookup ${AWG_TABLE_HOP}
-PostUp = ip route add default dev %i table ${AWG_TABLE_HOP}
-PostUp = iptables -t nat -A POSTROUTING -o %i -j MASQUERADE
-PostDown = ip rule del from ${AWG_SUBNET_PREFIX}.0/24 lookup ${AWG_TABLE_HOP} 2>/dev/null || true
-PostDown = ip route del default dev %i table ${AWG_TABLE_HOP} 2>/dev/null || true
-PostDown = iptables -t nat -D POSTROUTING -o %i -j MASQUERADE 2>/dev/null || true
-
-[Peer]
-PublicKey = ${HOP_SERVER_PUB}
-Endpoint = ${HOP_ENDPOINT}
-AllowedIPs = 0.0.0.0/0
-PersistentKeepalive = 25
-EOF_AWG1
-  chmod 600 /etc/amnezia/amneziawg/awg1.conf
-  AWG_SRV_PRIV=$(awg genkey)
-  AWG_SRV_PUB=$(echo "$AWG_SRV_PRIV" | awg pubkey)
-  AWG_HPK=$(openssl rand -base64 32)
-
-  cat > /etc/amnezia/amneziawg/awg0.conf <<EOF_AWG0
-[Interface]
-PrivateKey = ${AWG_SRV_PRIV}
-Address = ${AWG_SUBNET_PREFIX}.1/24
-ListenPort = ${AWG_PORT}
-MTU = 1280
-HeaderProtectionKey = ${AWG_HPK}
-Jc = ${AWG_JC}
-Jmin = ${AWG_JMIN}
-Jmax = ${AWG_JMAX}
-S1 = ${AWG_S1}
-S2 = ${AWG_S2}
-S3 = ${AWG_S3}
-S4 = ${AWG_S4}
-H1 = ${AWG_H1}
-H2 = ${AWG_H2}
-H3 = ${AWG_H3}
-H4 = ${AWG_H4}
-PostUp = iptables -I FORWARD -i %i -j ACCEPT; iptables -I FORWARD -o %i -j ACCEPT
-PostUp = iptables -t mangle -A FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
-PostUp = iptables -t mangle -A FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240
-PostUp = iptables -I FORWARD -i %i -o %i -j DROP
-PostDown = iptables -D FORWARD -i %i -o %i -j DROP 2>/dev/null || true
-PostDown = iptables -D FORWARD -i %i -j ACCEPT 2>/dev/null || true; iptables -D FORWARD -o %i -j ACCEPT 2>/dev/null || true
-PostDown = iptables -t mangle -D FORWARD -o %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || true
-PostDown = iptables -t mangle -D FORWARD -i %i -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss 1240 2>/dev/null || true
-EOF_AWG0
-  chmod 600 /etc/amnezia/amneziawg/awg0.conf
-  cat > /root/awg0-params.env <<EOF_PARAMS
-JC=${AWG_JC}
-JMIN=${AWG_JMIN}
-JMAX=${AWG_JMAX}
-S1=${AWG_S1}
-S2=${AWG_S2}
-S3=${AWG_S3}
-S4=${AWG_S4}
-H1=${AWG_H1}
-H2=${AWG_H2}
-H3=${AWG_H3}
-H4=${AWG_H4}
-ENDPOINT=${PUBLIC_IP}:${AWG_PORT}
-EOF_PARAMS
-  chmod 600 /root/awg0-params.env
-  printf '%s\n' "$AWG_HPK" > /root/awg0-hpk.txt
-  printf '%s\n' "$AWG_SRV_PUB" > /root/awg0-server.pub
-  chmod 600 /root/awg0-hpk.txt
-
-  umask "$old_umask"
-
-  systemctl enable --now awg-quick@awg1
-  systemctl enable --now awg-quick@awg0
-  sleep 3
-
-  local unit
-  for unit in awg-quick@awg1 awg-quick@awg0; do
-    if ! systemctl is-active --quiet "$unit"; then
-      echo "Ошибка: $unit не запустился. Логи:"
-      journalctl --no-pager -e -u "$unit" | tail -n 30
-      exit 1
-    fi
-  done
-  if ! udp_port_in_use "$AWG_PORT"; then
-    echo "Ошибка: AmneziaWG не слушает ${AWG_PORT}/udp."
-    exit 1
-  fi
-  local hs=""
-  for _ in {1..10}; do
-    hs=$(awg show awg1 latest-handshakes | awk '{print $2}' | head -n 1)
-    [[ "${hs:-0}" != "0" ]] && break
-    sleep 2
-  done
-  if [[ "${hs:-0}" == "0" ]]; then
-    echo "ВНИМАНИЕ: рукопожатия с (${HOP_ENDPOINT}) пока нет."
-    echo "Проверь, что на выходной ноде открыт ${AWG_PORT}/udp и hop-строка свежая."
-  else
-    echo "Рукопожатие с ${HOP_ENDPOINT} есть."
-  fi
-}
-setup_ru_routes() {
-  cat > /usr/local/sbin/awg-ru-routes <<'EOF_RU'
-#!/usr/bin/env bash
-set -euo pipefail
-
-CLIENT_SUBNET=10.8.0.0/24
-TABLE=101
-RULE_PRIO=32764
-CACHE_DIR=/var/lib/awg-ru-routes
-CACHE="$CACHE_DIR/ru.zone"
-MIN_PREFIXES=1000
-URL_PRIMARY=https://www.ipdeny.com/ipblocks/data/aggregated/ru-aggregated.zone
-
-log() { echo "[awg-ru-routes] $*"; }
-
-install -d -m 755 "$CACHE_DIR"
-
-# Шлюз и интерфейс берём из системы, а не хардкодим: смена шлюза провайдером
-# не должна тихо оставить таблицу с мёртвыми маршрутами.
-read -r GW DEV < <(ip -4 route show default | awk '{for (i = 1; i <= NF; i++) {if ($i == "via") g = $(i + 1); if ($i == "dev") d = $(i + 1)} print g, d; exit}')
-if [[ -z "${GW:-}" || -z "${DEV:-}" ]]; then
-    log "не удалось определить шлюз по умолчанию"; exit 1
-fi
-
-if ! iptables -t nat -C POSTROUTING -s "$CLIENT_SUBNET" -o "$DEV" -j MASQUERADE 2>/dev/null; then
-    iptables -t nat -A POSTROUTING -s "$CLIENT_SUBNET" -o "$DEV" -j MASQUERADE
-    log "NAT для прямого выхода добавлен"
-fi
-
-TMP="$(mktemp /tmp/ru-zone.XXXXXX)"
-trap 'rm -f "$TMP" "$TMP.batch"' EXIT
-
-if curl -fsS --max-time 60 -o "$TMP" "$URL_PRIMARY"; then
-    COUNT=$(grep -cE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$TMP" || true)
-    if [[ "$COUNT" -ge "$MIN_PREFIXES" ]]; then
-        install -m 644 "$TMP" "$CACHE"
-        log "загружено префиксов: $COUNT"
-    else
-        # Обрезанный или подменённый ответ не должен обнулить маршрутизацию.
-        log "ответ подозрительно короткий ($COUNT префиксов), беру кэш"
-    fi
-else
-    log "загрузка не удалась, беру кэш"
-fi
-
-if [[ ! -s "$CACHE" ]]; then
-    log "кэша нет и загрузка не удалась — маршруты не тронуты"; exit 1
-fi
-
-if ! ip rule list | grep -q "from ${CLIENT_SUBNET} lookup ${TABLE}"; then
-    ip rule add from "$CLIENT_SUBNET" lookup "$TABLE" priority "$RULE_PRIO"
-    log "правило маршрутизации добавлено"
-fi
-
-grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+/[0-9]+$' "$CACHE" \
-    | awk -v gw="$GW" -v dev="$DEV" -v t="$TABLE" '{print "route add " $1 " via " gw " dev " dev " table " t}' \
-    > "$TMP.batch"
-
-ip route flush table "$TABLE" 2>/dev/null || true
-ip -force -batch "$TMP.batch"
-log "в таблице $TABLE маршрутов: $(ip route show table "$TABLE" | wc -l) (шлюз $GW, $DEV)"
-EOF_RU
-  chmod 755 /usr/local/sbin/awg-ru-routes
-
-  cat > /etc/systemd/system/awg-ru-routes.service <<'EOF_RU_SVC'
-[Unit]
-Description=Российские префиксы в таблицу 101 для сплит-роутинга AmneziaWG
-After=network-online.target awg-quick@awg1.service
-Wants=network-online.target
-
-[Service]
-Type=oneshot
-ExecStart=/usr/local/sbin/awg-ru-routes
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
-EOF_RU_SVC
-
-  cat > /etc/systemd/system/awg-ru-routes.timer <<'EOF_RU_TIMER'
-[Unit]
-Description=Еженедельное обновление списка российских префиксов
-
-[Timer]
-OnCalendar=weekly
-Persistent=true
-RandomizedDelaySec=1h
-
-[Install]
-WantedBy=timers.target
-EOF_RU_TIMER
-
-  systemctl daemon-reload
-  systemctl enable --now awg-ru-routes.service
-  systemctl enable --now awg-ru-routes.timer
-  echo "Сплит-роутинг: $(ip route show table 101 | wc -l) российских префиксов идут напрямую"
-}
-
-install_vpn_cli() {
-  cat > /usr/local/sbin/vpn <<'EOF_AWGCLI'
-#!/usr/bin/env bash
-set -euo pipefail
-
-IFACE=awg0
-CONF=/etc/amnezia/amneziawg/${IFACE}.conf
-CLIENTS_DIR=/root/awg/clients
-PARAMS=/root/awg0-params.env
-HPK_FILE=/root/awg0-hpk.txt
-SERVER_PUB=/root/awg0-server.pub
-SUBNET_PREFIX=10.8.0
-DNS_LINE="8.8.8.8, 8.8.4.4"
-MTU=1280
-
-die() { echo "Ошибка: $*" >&2; exit 1; }
-
-usage() {
-    cat >&2 <<'USAGE'
-Использование: vpn <команда>
-
-  add <имя>...       добавить клиента(ов), адрес подбирается автоматически
-  remove <имя>...    удалить клиента(ов)
-  list               таблица: имя, адрес, последнее рукопожатие
-  names              только имена, по одному в строке (для скриптов)
-  show <имя>         вывести один конфиг в stdout
-  dump [имя...]      tar.gz со всеми (или указанными) конфигами в stdout
-
-USAGE
-}
-
-case "${1:-}" in
-    help|--help|-h|"") usage; exit 1 ;;
-esac
-
-[[ $EUID -eq 0 ]] || die "нужен root"
-[[ -r "$CONF" ]] || die "нет конфига сервера: $CONF"
-[[ -r "$PARAMS" ]] || die "нет параметров обфускации: $PARAMS"
-[[ -s "$HPK_FILE" ]] || die "нет ключа защиты заголовков: $HPK_FILE"
-
-next_free_ip() {
-    local used n
-    used=$(grep -oE "^AllowedIPs *= *${SUBNET_PREFIX}\.[0-9]+" "$CONF" | grep -oE '[0-9]+$' || true)
-    for n in $(seq 2 254); do
-        if ! grep -qx "$n" <<< "$used"; then
-            echo "${SUBNET_PREFIX}.${n}"
-            return 0
-        fi
-    done
-    die "свободных адресов в ${SUBNET_PREFIX}.0/24 не осталось"
-}
-
-peer_pubkey_by_name() {
-    awk -v want="$1" '
-        /^#_Name *=/    { n = $0; sub(/^#_Name *= */, "", n) }
-        /^PublicKey *=/ { if (n == want) { k = $0; sub(/^PublicKey *= */, "", k); print k; exit } }
-    ' "$CONF"
-}
-
-cmd_add() {
-    [[ $# -ge 1 ]] || die "укажи имя: vpn add <имя> [имя2 ...]"
-    # shellcheck disable=SC1090
-    . "$PARAMS"
-    [[ -n "${ENDPOINT:-}" ]] || die "в $PARAMS нет ENDPOINT"
-    local hpk spub name ip priv pub
-    hpk=$(cat "$HPK_FILE")
-    spub=$(cat "$SERVER_PUB")
-    install -d -m 700 "$CLIENTS_DIR"
-    for name in "$@"; do
-        [[ "$name" =~ ^[A-Za-z0-9_-]{1,32}$ ]] || die "недопустимое имя: $name"
-        [[ -z "$(peer_pubkey_by_name "$name")" ]] || die "клиент уже существует: $name"
-        ip=$(next_free_ip)
-        priv=$(awg genkey)
-        pub=$(echo "$priv" | awg pubkey)
-        printf '\n[Peer]\n#_Name = %s\nPublicKey = %s\nAllowedIPs = %s/32\n' "$name" "$pub" "$ip" >> "$CONF"
-        awg set "$IFACE" peer "$pub" allowed-ips "$ip/32"
-        ( umask 077
-          cat > "$CLIENTS_DIR/$name.conf" <<EOF
-[Interface]
-PrivateKey = $priv
-Address = $ip/32
-DNS = $DNS_LINE
-MTU = $MTU
-HeaderProtectionKey = $hpk
-Jc = $JC
-Jmin = $JMIN
-Jmax = $JMAX
-S1 = $S1
-S2 = $S2
-S3 = $S3
-S4 = $S4
-H1 = $H1
-H2 = $H2
-H3 = $H3
-H4 = $H4
-
-[Peer]
-PublicKey = $spub
-Endpoint = $ENDPOINT
-AllowedIPs = 0.0.0.0/0, ::/0
-PersistentKeepalive = 33
-EOF
-        )
-        echo "добавлен $name -> $ip ($CLIENTS_DIR/$name.conf)"
-    done
-}
-
-cmd_remove() {
-    [[ $# -ge 1 ]] || die "укажи имя: vpn remove <имя>"
-    local name pub
-    for name in "$@"; do
-        pub=$(peer_pubkey_by_name "$name")
-        [[ -n "$pub" ]] || die "нет такого клиента: $name"
-        awg set "$IFACE" peer "$pub" remove || true
-        # Абзацный режим awk (RS="") надёжнее построчного удаления: блок [Peer]
-        # всегда отделён пустой строкой.
-        awk -v want="#_Name = $name" '
-            BEGIN { RS = ""; ORS = "\n\n" }
-            {
-                if ($0 ~ /^\[Peer\]/ && index($0, want) > 0) next
-                print
-            }
-        ' "$CONF" > "$CONF.tmp"
-        mv "$CONF.tmp" "$CONF"
-        chmod 600 "$CONF"
-        rm -f "$CLIENTS_DIR/$name.conf"
-        echo "удалён $name"
-    done
-}
-
-cmd_list() {
-    local now name ip pub hs age
-    now=$(date +%s)
-    printf '%-16s %-14s %s\n' "ИМЯ" "АДРЕС" "ПОСЛЕДНЕЕ РУКОПОЖАТИЕ"
-    while read -r name ip pub; do
-        hs=$(awg show "$IFACE" latest-handshakes | awk -v k="$pub" '$1 == k { print $2 }')
-        if [[ -z "$hs" || "$hs" == "0" ]]; then
-            age="никогда"
-        else
-            age="$(( (now - hs) / 60 )) мин назад"
-        fi
-        printf '%-16s %-14s %s\n' "$name" "$ip" "$age"
-    done < <(awk '
-        /^#_Name *=/     { n = $0; sub(/^#_Name *= */, "", n) }
-        /^PublicKey *=/  { k = $0; sub(/^PublicKey *= */, "", k) }
-        /^AllowedIPs *=/ { a = $0; sub(/^AllowedIPs *= */, "", a); if (n != "") { print n, a, k; n = "" } }
-    ' "$CONF")
-}
-
-
-cmd_show() {
-    [[ $# -eq 1 ]] || die "укажи ровно одно имя: vpn show <имя>"
-    local f="$CLIENTS_DIR/$1.conf"
-    [[ -r "$f" ]] || die "нет конфига: $1"
-    cat "$f"
-}
-
-cmd_dump() {
-    [[ -d "$CLIENTS_DIR" ]] || die "нет каталога клиентов: $CLIENTS_DIR"
-    local n names=()
-    if [[ $# -eq 0 ]]; then
-        shopt -s nullglob
-        for n in "$CLIENTS_DIR"/*.conf; do names+=("$(basename "$n")"); done
-        shopt -u nullglob
-        [[ ${#names[@]} -gt 0 ]] || die "конфигов нет"
-    else
-        for n in "$@"; do
-            [[ -r "$CLIENTS_DIR/$n.conf" ]] || die "нет конфига: $n"
-            names+=("$n.conf")
-        done
-    fi
-    tar -C "$CLIENTS_DIR" -czf - "${names[@]}"
-}
-
-cmd_names() {
-    awk '/^#_Name *=/ { n = $0; sub(/^#_Name *= */, "", n); print n }' "$CONF"
-}
-
-case "$1" in
-    add)    shift; cmd_add "$@" ;;
-    remove) shift; cmd_remove "$@" ;;
-    list)   cmd_list ;;
-    names)  cmd_names ;;
-    show)   shift; cmd_show "$@" ;;
-    dump)   shift; cmd_dump "$@" ;;
-    *)      usage; exit 1 ;;
-esac
-EOF_AWGCLI
-  chmod 755 /usr/local/sbin/vpn
-}
-
-create_awg_clients() {
-  local n="${1:-0}" i names=()
-  [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  (( n > 0 )) || { echo "Клиенты не создавались."; return 0; }
-  for i in $(seq -w 1 "$n"); do
-    names+=("user$i")
-  done
-  /usr/local/sbin/vpn add "${names[@]}" > /dev/null
-  echo "Клиентов создано: $(/usr/local/sbin/vpn names | wc -l)"
-}
-
 echo "=== Установка ==="
 read -rp "Введите домен : " RU_DOMAIN
 RU_DOMAIN="${RU_DOMAIN,,}"
@@ -879,27 +295,6 @@ read -rp "Email для Let's Encrypt (можно оставить пустым):
 read -rp "Вставь ссылку hysteria2://...: " EU_LINK
 
 eval "$(parse_eu_link "$EU_LINK")"
-
-echo
-
-read -rp "Вставь ссылку vless://...: " EU_VLESS_LINK
-
-VLESS_ENABLED=0
-if [[ -n "${EU_VLESS_LINK// /}" ]]; then
-  eval "$(parse_eu_vless_link "$EU_VLESS_LINK")"
-  VLESS_ENABLED=1
-fi
-
-echo
-read -rp "Вставь строку AWGHOP1: " AWG_HOP_STRING
-parse_awg_hop "$AWG_HOP_STRING"
-
-read -rp "Сколько клиентских конфигов создать? [30]: " AWG_CLIENTS
-AWG_CLIENTS="${AWG_CLIENTS:-30}"
-if ! [[ "$AWG_CLIENTS" =~ ^[0-9]+$ ]] || (( AWG_CLIENTS > 250 )); then
-  echo "Ошибка: нужно число от 0 до 250 (в подсети ${AWG_SUBNET_PREFIX}.0/24 больше не поместится)."
-  exit 1
-fi
 
 apt update
 apt install -y curl ca-certificates openssl certbot python3 iproute2 iptables fail2ban nginx
@@ -926,7 +321,6 @@ if port_in_use 80; then
   exit 1
 fi
 
-RU_PORT=$(random_port)
 RU_PASS=$(random_pass)
 RU_OBFS_PASS=$(random_pass)
 
@@ -942,17 +336,10 @@ systemctl disable hysteria-client-eu.service 2>/dev/null || true
 install_singbox
 systemctl stop sing-box 2>/dev/null || true
 
-if [[ "$VLESS_ENABLED" == "1" ]]; then
-  RU_REALITY_KEYPAIR=$(sing-box generate reality-keypair)
-  RU_REALITY_PRIVATE=$(echo "$RU_REALITY_KEYPAIR" | awk '/PrivateKey/ {print $2}')
-  RU_REALITY_PUBLIC=$(echo "$RU_REALITY_KEYPAIR" | awk '/PublicKey/ {print $2}')
-  RU_VLESS_UUID=$(sing-box generate uuid)
-  RU_VLESS_SID=$(sing-box generate rand 8 --hex)
-
-  if [[ -z "$RU_REALITY_PRIVATE" || -z "$RU_REALITY_PUBLIC" || -z "$RU_VLESS_UUID" || -z "$RU_VLESS_SID" ]]; then
-    echo "Ошибка: не удалось сгенерировать параметры REALITY."
-    exit 1
-  fi
+if udp_port_in_use "$RU_PORT"; then
+  echo "Ошибка: ${RU_PORT}/udp занят — его должен слушать sing-box (hysteria2)."
+  ss -lunp | grep ":${RU_PORT}" || true
+  exit 1
 fi
 
 CERTBOT_ARGS=(certonly --standalone --preferred-challenges http -d "$RU_DOMAIN" --agree-tos --non-interactive --keep-until-expiring)
@@ -971,72 +358,6 @@ if [[ -n "${EU_OBFS_PASS:-}" ]]; then
         \"password\": \"${EU_OBFS_PASS}\"
       },
 "
-fi
-VLESS_IN_BLOCK=""
-VLESS_OUT_BLOCK=""
-VLESS_RULE_BLOCK=""
-if [[ "$VLESS_ENABLED" == "1" ]]; then
-  VLESS_IN_BLOCK=",
-    {
-      \"type\": \"vless\",
-      \"tag\": \"vless-in\",
-      \"listen\": \"::\",
-      \"listen_port\": ${VLESS_PORT},
-      \"users\": [
-        {
-          \"name\": \"user1\",
-          \"uuid\": \"${RU_VLESS_UUID}\",
-          \"flow\": \"xtls-rprx-vision\"
-        }
-      ],
-      \"tls\": {
-        \"enabled\": true,
-        \"server_name\": \"${RU_DOMAIN}\",
-        \"reality\": {
-          \"enabled\": true,
-          \"handshake\": {
-            \"server\": \"127.0.0.1\",
-            \"server_port\": ${NGINX_LOCAL_PORT}
-          },
-          \"private_key\": \"${RU_REALITY_PRIVATE}\",
-          \"short_id\": [
-            \"${RU_VLESS_SID}\"
-          ]
-        }
-      }
-    }"
-
-  VLESS_OUT_BLOCK=",
-    {
-      \"type\": \"vless\",
-      \"tag\": \"eu_exit_vless\",
-      \"server\": \"${EU_V_HOST}\",
-      \"server_port\": ${EU_V_PORT},
-      \"uuid\": \"${EU_V_UUID}\",
-      \"flow\": \"${EU_V_FLOW}\",
-      \"packet_encoding\": \"xudp\",
-      \"tls\": {
-        \"enabled\": true,
-        \"server_name\": \"${EU_V_SNI}\",
-        \"utls\": {
-          \"enabled\": true,
-          \"fingerprint\": \"${EU_V_FP}\"
-        },
-        \"reality\": {
-          \"enabled\": true,
-          \"public_key\": \"${EU_V_PBK}\",
-          \"short_id\": \"${EU_V_SID}\"
-        }
-      }
-    }"
-
-  VLESS_RULE_BLOCK=",
-      {
-        \"inbound\": [
-          \"vless-in\"
-        ],
-        \"outbound\": \"eu_exit_vless\"
-      }"
 fi
 
 mkdir -p /etc/sing-box
@@ -1072,7 +393,7 @@ cat > /etc/sing-box/config.json <<EOF_CONF
         "url": "https://www.bing.com",
         "rewrite_host": true
       }
-    }${VLESS_IN_BLOCK}
+    }
   ],
   "outbounds": [
     {
@@ -1090,7 +411,7 @@ ${EU_OBFS_BLOCK}      "tls": {
         "server_name": "${EU_SNI}",
         "insecure": ${EU_INSECURE}
       }
-    }${VLESS_OUT_BLOCK}
+    }
   ],
   "route": {
     "rules": [
@@ -1099,7 +420,7 @@ ${EU_OBFS_BLOCK}      "tls": {
           ".ru"
         ],
         "outbound": "ru_direct"
-      }${VLESS_RULE_BLOCK}
+      }
     ],
     "final": "eu_exit"
   }
@@ -1122,20 +443,11 @@ if ! udp_port_in_use "$RU_PORT"; then
   echo "Ошибка: sing-box не слушает ${RU_PORT}/udp (hysteria2)."
   exit 1
 fi
-if [[ "$VLESS_ENABLED" == "1" ]] && ! tcp_port_in_use "$VLESS_PORT"; then
-  echo "Ошибка: sing-box не слушает ${VLESS_PORT}/tcp (vless-reality)."
-  exit 1
-fi
 
 PASS_ENC=$(urlencode "$RU_PASS")
 DOMAIN_ENC=$(urlencode "$RU_DOMAIN")
 OBFS_PASS_ENC=$(urlencode "$RU_OBFS_PASS")
 RU_LINK="hysteria2://${PASS_ENC}@${RU_DOMAIN}:${RU_PORT}?peer=${DOMAIN_ENC}&obfs=salamander&obfs-password=${OBFS_PASS_ENC}#hys2"
-
-RU_VLESS_LINK=""
-if [[ "$VLESS_ENABLED" == "1" ]]; then
-  RU_VLESS_LINK="vless://${RU_VLESS_UUID}@${RU_DOMAIN}:${VLESS_PORT}?type=tcp&security=reality&encryption=none&flow=xtls-rprx-vision&sni=${RU_DOMAIN}&fp=firefox&pbk=${RU_REALITY_PUBLIC}&sid=${RU_VLESS_SID}#vless"
-fi
 
 write_link_config "${SUB_FILE}"
 setup_nginx
@@ -1146,25 +458,8 @@ sleep 1
 SUB_CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$SUB_URL" || echo "000")
 if [[ "$SUB_CODE" != "200" ]]; then
   echo "ВНИМАНИЕ: подписка ${SUB_URL} отдала код ${SUB_CODE}, а не 200."
-  echo "Ссылки ниже рабочие, но по URL клиент их не получит — проверь nginx и REALITY handshake."
+  echo "Ссылки ниже рабочие, но по URL клиент их не получит — проверь nginx."
 fi
-
-if [[ "$VLESS_ENABLED" == "1" ]]; then
-  sleep 1
-  DEST_SUBJECT=$(echo | timeout 10 openssl s_client -connect "127.0.0.1:${NGINX_LOCAL_PORT}" \
-    -servername "$RU_DOMAIN" 2>/dev/null | openssl x509 -noout -subject 2>/dev/null || true)
-  if [[ -z "$DEST_SUBJECT" ]]; then
-    echo "ВНИМАНИЕ: dest 127.0.0.1:${NGINX_LOCAL_PORT} не отвечает валидным TLS с SNI ${RU_DOMAIN}."
-    echo "REALITY без рабочего dest соединений не поднимет — проверь nginx."
-  else
-    echo "dest живой, сертификат: ${DEST_SUBJECT}"
-  fi
-fi
-
-setup_awg_entry
-setup_ru_routes
-install_vpn_cli
-create_awg_clients "$AWG_CLIENTS"
 
 NEW_SSH_PORT=$(shuf -i 20000-60000 -n 1)
 cp /etc/ssh/sshd_config /etc/ssh/sshd_config.bak 2>/dev/null || true
@@ -1196,7 +491,6 @@ ufw allow "$NEW_SSH_PORT"/tcp
 ufw allow "$RU_PORT"/udp
 ufw allow 80/tcp
 ufw allow 443/tcp
-ufw allow "$AWG_PORT"/udp
 ufw --force enable
 
 cat > /etc/sysctl.conf <<'EOF'
@@ -1219,23 +513,7 @@ echo "Новый SSH порт: $NEW_SSH_PORT"
 echo
 echo "--- Ссылка hysteria2 ---"
 echo "$RU_LINK"
-if [[ "$VLESS_ENABLED" == "1" ]]; then
-  echo
-  echo "--- Ссылка vless-reality ---"
-  echo "$RU_VLESS_LINK"
-fi
 echo
 echo "--- Подписка ---"
 echo "$SUB_URL"
-echo
-echo "=== AmneziaWG ==="
-echo
-echo "Управление:"
-echo "  vpn list            список"
-echo "  vpn add <имя>       добавить"
-echo "  vpn remove <имя>    удалить"
-echo "  vpn dump            все конфиги одним потоком"
-
-echo "--- Скачать все конфиги к себе ---"
-echo "scp -P ${NEW_SSH_PORT} 'root@${PUBLIC_IP}:/root/awg/clients/*.conf' ~/Desktop/"
 echo
