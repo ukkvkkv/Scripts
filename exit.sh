@@ -133,4 +133,4 @@ ufw --force enable
 echo
 echo "SSH порт: $SSH_PORT"
 echo "Ссылка для entry.sh:"
-echo "vless://${UUID}@${DOMAIN}:443?type=tcp&security=reality&sni=${DOMAIN}&fp=chrome&pbk=${PUB}&sid=${SID}&flow=xtls-rprx-vision#exit-relay"
+echo "vless://${UUID}@${DOMAIN}:443?type=tcp&security=reality&sni=${DOMAIN}&fp=firefox&pbk=${PUB}&sid=${SID}&flow=xtls-rprx-vision#exit-relay"

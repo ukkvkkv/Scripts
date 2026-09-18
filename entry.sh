@@ -103,7 +103,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       "streamSettings": {
         "network": "raw",
         "security": "reality",
-        "realitySettings": { "serverName": "${EXIT_SNI}", "fingerprint": "chrome",
+        "realitySettings": { "serverName": "${EXIT_SNI}", "fingerprint": "firefox",
           "publicKey": "${EXIT_PBK}", "shortId": "${EXIT_SID}" }
       }
     },
@@ -129,7 +129,9 @@ systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
 
-LINK="vless://${UUID}@${DOMAIN}:443?encryption=none&security=reality&sni=${DOMAIN}&fp=firefox&pbk=${PUB}&sid=${SID}&type=xhttp&host=${DOMAIN}&path=%2F${XPATH#/}&mode=auto#vless-xhttp-multihop"
+# В ссылке IP, а не домен: клиенту не нужен DNS (и не мешает закешированный старый адрес)
+IP=$(curl -4fsS https://api.ipify.org)
+LINK="vless://${UUID}@${IP}:443?encryption=none&security=reality&sni=${DOMAIN}&fp=firefox&pbk=${PUB}&sid=${SID}&type=xhttp&host=${DOMAIN}&path=%2F${XPATH#/}&mode=auto#vless"
 mkdir -p "$SUB_DIR"
 printf '%s\n' "$LINK" | base64 -w0 > "$SUB_DIR/$SUB_TOKEN"
 
