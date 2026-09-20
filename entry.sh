@@ -14,6 +14,10 @@ read -rp "Домен: " DOMAIN
 read -rp "Email для Let's Encrypt (можно пусто): " EMAIL
 read -rp "Ссылка из exit.sh: " EXIT_LINK
 
+# IPv6 у самой ноды: есть дефолтный v6-маршрут — значит можно и слушать, и ходить по v6
+HAS_V6=0; ip -6 route show default 2>/dev/null | grep -q . && HAS_V6=1
+V6_LISTEN=""; [[ $HAS_V6 == 1 ]] && V6_LISTEN=$'\n    listen [::]:80;'
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl certbot nginx fail2ban python3-systemd ufw
 sed -i -e 's#^\s*access_log .*#access_log off;#' -e 's#^\s*error_log .*#error_log /dev/null crit;#' /etc/nginx/nginx.conf
@@ -31,7 +35,7 @@ rm -f /etc/nginx/sites-enabled/default
 mkdir -p "$ACME_DIR"
 cat > "$SITE" <<EOF
 server {
-    listen 80;
+    listen 80;${V6_LISTEN}
     server_name ${DOMAIN};
     location /.well-known/acme-challenge/ { root ${ACME_DIR}; }
     location / { return 301 https://\$host\$request_uri; }
@@ -74,6 +78,20 @@ PUB=$(awk -F': ' '/^Password/{print $2}' <<<"$KEYS")
 
 # Российское — напрямую отсюда, остальное — на exit. sniffing даёт geosite домен,
 # IPIfNonMatch даёт geoip IP домена (vk.com не .ru, но IP российский).
+#
+# IPv6. Если v6 у ноды нет, российские v6-адреса нельзя пускать в direct — уйдут
+# в никуда, поэтому весь v6 заворачивается на exit правилом ::/0. Чтобы это
+# правило не утащило туда же российские домены (у ya.ru и vk.com есть AAAA),
+# queryStrategy держит резолвинг для маршрутизации на v4 — тогда ::/0 совпадает
+# только с голыми v6-адресами от клиента. Есть v6 — правило не нужно, geoip:ru
+# покрывает и v6-диапазоны, direct ходит обеими семьями.
+if [[ $HAS_V6 == 1 ]]; then
+  DIRECT_STRATEGY=UseIPv4v6; QUERY_STRATEGY=UseIP; V6_RULE=""
+else
+  DIRECT_STRATEGY=UseIPv4; QUERY_STRATEGY=UseIPv4
+  V6_RULE='{ "ip": ["::/0"], "outboundTag": "to-exit" },
+      '
+fi
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "access": "none", "error": "none", "loglevel": "none" },
@@ -92,7 +110,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
       },
       "xhttpSettings": { "host": "${DOMAIN}", "path": "${XPATH}", "mode": "auto" }
     },
-    "sniffing": { "enabled": true, "destOverride": ["http", "tls"] }
+    "sniffing": { "enabled": true, "destOverride": ["http", "tls", "quic"] }
   }],
   "outbounds": [
     {
@@ -107,14 +125,15 @@ cat > /usr/local/etc/xray/config.json <<EOF
           "publicKey": "${EXIT_PBK}", "shortId": "${EXIT_SID}" }
       }
     },
-    { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
+    { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "${DIRECT_STRATEGY}" } },
     { "tag": "block", "protocol": "blackhole" }
   ],
+  "dns": { "servers": ["localhost"], "queryStrategy": "${QUERY_STRATEGY}" },
   "routing": {
     "domainStrategy": "IPIfNonMatch",
     "rules": [
       { "ip": ["geoip:private"], "outboundTag": "block" },
-      { "domain": ["geosite:category-ru"], "outboundTag": "direct" },
+      ${V6_RULE}{ "domain": ["geosite:category-ru"], "outboundTag": "direct" },
       { "ip": ["geoip:ru"], "outboundTag": "direct" }
     ]
   }
@@ -136,7 +155,9 @@ mkdir -p "$SUB_DIR"
 printf '%s\n' "$LINK" | base64 -w0 > "$SUB_DIR/$SUB_TOKEN"
 
 # --- система ---
-printf '%s\n' net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 \
+# IPv6 не глушим: цепочка его несёт, а disable_ipv6=1 в default вырубал бы его и
+# на всех будущих интерфейсах
+printf '%s\n' net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 \
   net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr > /etc/sysctl.d/99-tunnel.conf
 sysctl --system >/dev/null
 

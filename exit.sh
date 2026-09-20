@@ -11,6 +11,10 @@ SITE=/etc/nginx/sites-available/site.conf
 read -rp "Домен: " DOMAIN
 read -rp "Email для Let's Encrypt (можно пусто): " EMAIL
 
+# IPv6 у самой ноды: есть дефолтный v6-маршрут — значит можно и слушать, и ходить по v6
+HAS_V6=0; ip -6 route show default 2>/dev/null | grep -q . && HAS_V6=1
+V6_LISTEN=""; [[ $HAS_V6 == 1 ]] && V6_LISTEN=$'\n    listen [::]:80;'
+
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl certbot nginx fail2ban python3-systemd ufw
 sed -i -e 's#^\s*access_log .*#access_log off;#' -e 's#^\s*error_log .*#error_log /dev/null crit;#' /etc/nginx/nginx.conf
@@ -20,7 +24,7 @@ rm -f /etc/nginx/sites-enabled/default
 mkdir -p "$ACME_DIR"
 cat > "$SITE" <<EOF
 server {
-    listen 80;
+    listen 80;${V6_LISTEN}
     server_name ${DOMAIN};
     location /.well-known/acme-challenge/ { root ${ACME_DIR}; }
     location / { return 301 https://\$host\$request_uri; }
@@ -63,6 +67,9 @@ KEYS=$(xray x25519)
 PRIV=$(awk -F': ' '/^PrivateKey/{print $2}' <<<"$KEYS")
 PUB=$(awk -F': ' '/^Password/{print $2}' <<<"$KEYS")
 
+# UseIPv4v6: сначала v4 (адрес выхода у сайтов остаётся привычным), при отсутствии
+# A-записи — v6. Голые v6-адреса от клиента freedom и так отдаёт как есть, так что
+# дальше ноды цепочка остаётся двустековой.
 cat > /usr/local/etc/xray/config.json <<EOF
 {
   "log": { "access": "none", "error": "none", "loglevel": "none" },
@@ -85,7 +92,7 @@ cat > /usr/local/etc/xray/config.json <<EOF
     }
   }],
   "outbounds": [
-    { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4" } },
+    { "tag": "direct", "protocol": "freedom", "settings": { "domainStrategy": "UseIPv4v6" } },
     { "tag": "block", "protocol": "blackhole" }
   ],
   "routing": {
@@ -104,7 +111,8 @@ systemctl enable xray
 systemctl restart xray
 
 # --- система ---
-printf '%s\n' net.ipv6.conf.all.disable_ipv6=1 net.ipv6.conf.default.disable_ipv6=1 \
+# IPv6 не глушим: через эту ноду уходит весь v6 цепочки
+printf '%s\n' net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 \
   net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr > /etc/sysctl.d/99-tunnel.conf
 sysctl --system >/dev/null
 
