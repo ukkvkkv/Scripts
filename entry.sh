@@ -14,13 +14,35 @@ read -rp "Домен: " DOMAIN
 read -rp "Email для Let's Encrypt (можно пусто): " EMAIL
 read -rp "Ссылка из exit.sh: " EXIT_LINK
 
-# IPv6 у самой ноды: есть дефолтный v6-маршрут — значит можно и слушать, и ходить по v6
-HAS_V6=0; ip -6 route show default 2>/dev/null | grep -q . && HAS_V6=1
-V6_LISTEN=""; [[ $HAS_V6 == 1 ]] && V6_LISTEN=$'\n    listen [::]:80;'
-
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl certbot nginx fail2ban python3-systemd ufw
 sed -i -e 's#^\s*access_log .*#access_log off;#' -e 's#^\s*error_log .*#error_log /dev/null crit;#' /etc/nginx/nginx.conf
+
+# --- IPv6 ---
+# Включаем до проверки: disable_ipv6=1 от прошлой установки прячет адрес.
+printf '%s\n' net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 \
+  net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr > /etc/sysctl.d/99-tunnel.conf
+sysctl --system >/dev/null
+# Рабочий v6 = глобальный адрес + дефолтный маршрут + реальный выход наружу. Одного
+# маршрута мало: без связности direct ушёл бы в v6 и умер. Пара попыток — SLAAC
+# после включения v6 приходит не сразу.
+V6_ADDR=""
+for _ in 1 2 3 4 5; do
+  if ip -6 addr show scope global | grep -q inet6 && ip -6 route show default | grep -q .; then
+    V6_ADDR=$(curl -6fsS -m 5 https://api6.ipify.org 2>/dev/null) && break
+  fi
+  sleep 2
+done
+HAS_V6=0; [[ -n "$V6_ADDR" ]] && HAS_V6=1
+if [[ $HAS_V6 == 1 ]]; then V6_STATUS="есть, $V6_ADDR"
+elif ip -6 addr show scope global | grep -q inet6; then V6_STATUS="адрес есть, но наружу не ходит — считаю, что нет"
+else V6_STATUS="нет"; fi
+echo "IPv6: $V6_STATUS"
+# Let's Encrypt предпочитает AAAA: при AAAA-записи на ноде без v6 certbot не пройдёт
+if [[ $HAS_V6 == 0 ]] && python3 -c 'import socket,sys; socket.getaddrinfo(sys.argv[1], 80, socket.AF_INET6)' "$DOMAIN" 2>/dev/null; then
+  echo "У $DOMAIN есть AAAA-запись, а у ноды нет IPv6 — удали AAAA или почини v6."; exit 1
+fi
+V6_LISTEN=""; [[ $HAS_V6 == 1 ]] && V6_LISTEN=$'\n    listen [::]:80;'
 
 eval "$(python3 -c '
 import sys
@@ -84,7 +106,8 @@ PUB=$(awk -F': ' '/^Password/{print $2}' <<<"$KEYS")
 # правило не утащило туда же российские домены (у ya.ru и vk.com есть AAAA),
 # queryStrategy держит резолвинг для маршрутизации на v4 — тогда ::/0 совпадает
 # только с голыми v6-адресами от клиента. Есть v6 — правило не нужно, geoip:ru
-# покрывает и v6-диапазоны, direct ходит обеими семьями.
+# покрывает и v6-диапазоны, direct ходит обеими семьями (так на Beget с 23.09.2026),
+# а зарубежный v6 уходит на exit, который без своего v6 его сразу отбивает.
 if [[ $HAS_V6 == 1 ]]; then
   DIRECT_STRATEGY=UseIPv4v6; QUERY_STRATEGY=UseIP; V6_RULE=""
 else
@@ -144,6 +167,7 @@ EOF
 mkdir -p /etc/systemd/system/xray.service.d
 printf '[Service]\nStandardOutput=null\nStandardError=null\nLogLevelMax=err\n' > /etc/systemd/system/xray.service.d/nolog.conf
 rm -rf /var/log/xray
+xray run -test -c /usr/local/etc/xray/config.json >/dev/null
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
@@ -155,12 +179,6 @@ mkdir -p "$SUB_DIR"
 printf '%s\n' "$LINK" | base64 -w0 > "$SUB_DIR/$SUB_TOKEN"
 
 # --- система ---
-# IPv6 не глушим: цепочка его несёт, а disable_ipv6=1 в default вырубал бы его и
-# на всех будущих интерфейсах
-printf '%s\n' net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 \
-  net.core.default_qdisc=fq net.ipv4.tcp_congestion_control=bbr > /etc/sysctl.d/99-tunnel.conf
-sysctl --system >/dev/null
-
 # SSH: drop-in с 00-, т.к. в sshd побеждает первое значение, а 50-cloud-init.conf
 # включает пароль. Port накапливается — из основного конфига его убираем.
 SSH_PORT=$(shuf -i 20000-60000 -n 1)
@@ -176,6 +194,7 @@ systemctl restart ssh
 printf '[sshd]\nenabled = true\nport = %s\nbackend = systemd\n' "$SSH_PORT" > /etc/fail2ban/jail.d/sshd.conf
 systemctl restart fail2ban
 
+sed -i 's/^IPV6=.*/IPV6=yes/' /etc/default/ufw   # иначе ufw не открывает порты по v6
 ufw --force reset >/dev/null
 ufw default deny incoming
 ufw allow "$SSH_PORT/tcp"
@@ -185,5 +204,6 @@ ufw --force enable
 
 echo
 echo "SSH порт: $SSH_PORT"
+echo "IPv6:     $V6_STATUS"
 echo "Ссылка:   $LINK"
 echo "Подписка: https://${DOMAIN}/${SUB_TOKEN}"
