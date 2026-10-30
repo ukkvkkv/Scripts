@@ -15,7 +15,7 @@ read -rp "Email для Let's Encrypt (можно пусто): " EMAIL
 read -rp "Ссылка из exit.sh: " EXIT_LINK
 
 apt-get update
-DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl certbot nginx fail2ban python3-systemd ufw
+DEBIAN_FRONTEND=noninteractive apt-get install -y curl openssl certbot nginx fail2ban python3-systemd ufw jq netcat-openbsd cron
 sed -i -e 's#^\s*access_log .*#access_log off;#' -e 's#^\s*error_log .*#error_log /dev/null crit;#' /etc/nginx/nginx.conf
 
 # --- IPv6 ---
@@ -171,6 +171,50 @@ xray run -test -c /usr/local/etc/xray/config.json >/dev/null
 systemctl daemon-reload
 systemctl enable xray
 systemctl restart xray
+
+# Порт до exit: случайный из 40000-49999 (exit.sh принимает весь диапазон), сторож раз
+# в 5 мин меняет его, если перестал отвечать, и раз в 6 ч — на всякий случай.
+cat > /usr/local/bin/exit-port.sh <<'EXIT_PORT_EOF'
+#!/bin/sh
+# Порт to-exit (Beget → Варшава). Варшава принимает 40000-49999 (NAT → 443).
+# exit-port.sh        — сменить порт, только если текущий не отвечает (cron каждые 5 мин)
+# exit-port.sh rotate — сменить порт в любом случае (cron каждые 6 ч)
+# Неотвечавшие порты копятся в $DEAD («порт дата») и больше не выбираются.
+CFG=/usr/local/etc/xray/config.json
+HOST=$(jq -r '.outbounds[]|select(.tag=="to-exit").settings.vnext[0].address' "$CFG")
+DEAD=/var/lib/exit-port/dead
+NEW=/usr/local/etc/xray/to-exit.new.json  # xray -test берёт формат по расширению
+exec 9>/run/exit-port.lock; flock -n 9 || exit 0
+log() { logger -t exit-port "$*"; echo "$*"; }
+alive() { nc -z -w5 "$HOST" "$1" 2>/dev/null; }
+mkdir -p "${DEAD%/*}"; touch "$DEAD"
+bad=""
+
+cur=$(jq '.outbounds[]|select(.tag=="to-exit").settings.vnext[0].port' "$CFG")
+if [ "$1" != rotate ]; then
+  # два промаха подряд, чтобы не дёргаться от разовой потери
+  alive "$cur" && exit 0; sleep 10; alive "$cur" && exit 0
+  log "port $cur не отвечает"; bad="$cur"
+fi
+
+for i in $(seq 20); do
+  p=$(shuf -i 40000-49999 -n 1)
+  [ "$p" = "$cur" ] && continue
+  grep -q "^$p " "$DEAD" && continue
+  alive "$p" || { bad="$bad $p"; continue; }
+  # в мёртвые пишем только когда нашёлся живой порт — иначе это лежит сама Варшава
+  for b in $bad; do echo "$b $(date +%F)" >> "$DEAD"; done
+  jq --argjson p "$p" '(.outbounds[]|select(.tag=="to-exit").settings.vnext[0].port)=$p' "$CFG" > "$NEW" &&
+    xray run -test -config "$NEW" >/dev/null && mv "$NEW" "$CFG" && systemctl restart xray &&
+    { log "port $cur -> $p${1:+ ($1)}${bad:+, в мёртвые:$bad}"; exit 0; }
+  rm -f "$NEW"; log "не удалось записать конфиг"; exit 1
+done
+log "ни один порт не ответил, оставляю $cur"; exit 1
+EXIT_PORT_EOF
+chmod 755 /usr/local/bin/exit-port.sh
+rm -f /var/lib/exit-port/dead   # список мёртвых портов от старого выхода не годится
+printf '*/5 * * * * root /usr/local/bin/exit-port.sh >/dev/null\n0 */6 * * * root /usr/local/bin/exit-port.sh rotate >/dev/null\n' > /etc/cron.d/exit-port
+/usr/local/bin/exit-port.sh rotate || echo "ВНИМАНИЕ: exit не ответил ни на одном порту 40000-49999 — to-exit остался на ${EXIT_PORT}"
 
 # В ссылке IP, а не домен: клиенту не нужен DNS (и не мешает закешированный старый адрес)
 IP=$(curl -4fsS https://api.ipify.org)

@@ -164,10 +164,17 @@ ufw default deny incoming
 ufw allow "$SSH_PORT/tcp"
 ufw allow 80/tcp
 ufw allow 443/tcp
+# Вход (exit-port.sh) ходит сюда на случайный порт 40000-49999 — ТСПУ режет то 443, то
+# 80 между нодами. NAT до filter, поэтому UFW видит уже 443 и диапазон открывать не надо.
+# Ставится после reset: он возвращает before*.rules к заводским.
+for f in /etc/ufw/before.rules /etc/ufw/before6.rules; do
+  printf '# exit-port range: 40000-49999 -> 443\n*nat\n:PREROUTING ACCEPT [0:0]\n-A PREROUTING -p tcp --dport 40000:49999 -j REDIRECT --to-ports 443\nCOMMIT\n\n' \
+    | cat - "$f" > "$f.new" && mv "$f.new" "$f"
+done
 ufw --force enable
 
 echo
 echo "SSH порт: $SSH_PORT"
 echo "IPv6:     $V6_STATUS"
-echo "Ссылка для entry.sh:"
+echo ""
 echo "vless://${UUID}@${DOMAIN}:443?type=tcp&security=reality&sni=${DOMAIN}&fp=firefox&pbk=${PUB}&sid=${SID}&flow=xtls-rprx-vision#exit-relay"
